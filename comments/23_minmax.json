@@ -1,0 +1,82 @@
+{
+  "50": {
+    "instruction": "push rbp",
+    "why": "The System V AMD64 ABI designates rbp as callee-saved: any function that modifies it must preserve the caller's original value. Pushing it to the stack before use means the caller's frame pointer is safely stored and will be restored on return. Without this save, the caller would find its own frame pointer corrupted when it tried to access its local variables after find_max returns.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "51": {
+    "instruction": "mov  rbp, rsp",
+    "why": "After saving the old frame pointer, we point rbp at the current stack pointer. This creates a stable base address for the current stack frame that does not move even if rsp changes later (due to additional push instructions). Debuggers and profilers rely on the rbp chain — each saved rbp points to the previous frame's rbp — to reconstruct a human-readable call stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "54": {
+    "instruction": "xor  rdx, rdx",
+    "why": "xor reg, reg is the canonical zero idiom on x86-64. It encodes in 3 bytes versus 7 for 'mov rdx, 0', and the CPU's rename stage recognises it as a dependency-breaking zero idiom: it does not stall waiting for rdx's previous value. Here it initialises the max index to 0, matching the assumption that arr[0] is the starting maximum before the scan begins.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "61": {
+    "instruction": "mov  r8, [rdi + rcx*8]",
+    "why": "The x86 SIB (Scale-Index-Base) addressing mode encodes base + index * scale in a single instruction with no separate multiply step. Scale 8 matches the element size of int64_t, so rcx doubles as both the logical array index and the SIB index field. This is the direct equivalent of C's arr[i] where sizeof(*arr) == 8 — the hardware address-generation unit computes the offset for free in parallel with instruction decode.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "63": {
+    "instruction": "cmovg rax, r8",
+    "why": "In a comparison loop over unsorted data, whether 'new max found' is taken or not-taken is essentially random, making branch prediction unreliable and costing 15–20 pipeline-flush cycles per misprediction. CMOVG ('conditional move if greater') never branches: both the old and the candidate values are already in registers, and the processor selects between them at the rename stage with zero flush penalty. This makes the loop's throughput independent of data distribution.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmovcc"
+  },
+  "64": {
+    "instruction": "cmovg rdx, rcx",
+    "why": "The maximum value (rax) and its index (rdx) must update atomically from the same flag state. Both CMOVG instructions read the flags set by the single preceding CMP, so either both fire or neither does. Replacing them with a conditional branch over two plain MOVs would require the flag state to remain valid across both moves, which is fragile — any intervening instruction that touches flags would silently corrupt the index.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmovcc"
+  },
+  "93": {
+    "instruction": "cmovl rax, r8",
+    "why": "CMOVL ('conditional move if less') checks the SF≠OF condition, which correctly handles signed comparison including negative values. The array stores signed int64_t including values like -100. Using the unsigned variant CMOVB instead would interpret -100 as 2^64 − 100 — a very large positive number — meaning it would never be recognised as the minimum, producing silently wrong output.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmovcc"
+  },
+  "94": {
+    "instruction": "cmovl rdx, rcx",
+    "why": "The index register rdx must always track the location of whatever value is currently in rax. Placing this CMOVL immediately after the one that updates rax guarantees both see the same flag state from the preceding CMP. If the two updates were separated by any flag-modifying instruction, the value and its index could become inconsistent — a subtle bug that would only surface on specific input data.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmovcc"
+  },
+  "109": {
+    "instruction": "push rbx",
+    "why": "rbx is callee-saved. print_i64 uses rbx as a write pointer advanced across the digit-extraction loop and the in-place reversal pass. Saving it here means any caller that stores a live value in rbx can leave it there across a call to print_i64 without protecting it themselves. The matching 'pop rbx' near the end of the function restores the caller's value before returning.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "110": {
+    "instruction": "push r12",
+    "why": "r12–r15 are all callee-saved in the System V ABI. print_i64 stores the buffer start address in r12 so it can reference the beginning of the number string during the reversal pass, even though rax, rbx, and rdx are heavily modified in between. Using a callee-saved register avoids the need for a local stack slot and the associated load/store overhead.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "111": {
+    "instruction": "push r13",
+    "why": "r13 holds the sign flag (0 = positive, 1 = negative) across the digit loop and the optional minus-sign write. Because r13 is callee-saved, this flag survives any future inner function call without requiring additional push/pop around each one. The pattern — save live state in callee-saved registers once at function entry, restore once at exit — is far cheaper than pushing and popping across every inner call.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "117": {
+    "instruction": "test rdi, rdi",
+    "why": "TEST computes rdi AND rdi, discards the result, and sets SF and ZF based on the value. It is preferred over 'cmp rdi, 0' because TEST encodes in 3 bytes on a 64-bit register versus CMP's 4 bytes with an immediate zero, and it needs no second operand. The subsequent JNS ('jump if not sign') checks SF=0, meaning the high bit is clear, i.e. rdi is non-negative — we need to negate only if SF=1.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "132": {
+    "instruction": "xor  rdx, rdx",
+    "why": "The DIV instruction treats RDX:RAX as a single 128-bit dividend. If rdx contains leftover data from a previous operation, the effective dividend is orders of magnitude larger than intended, and the quotient can overflow rax, raising a divide-overflow exception (#DE). Clearing rdx before each division makes the dividend equal to rax alone — matching the single-variable division implied by the C expression value % 10.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "134": {
+    "instruction": "div  rcx",
+    "why": "Unsigned DIV places the quotient in rax and the remainder in rdx. With rcx = 10, rdx gets the least-significant decimal digit (0–9) of the current value in rax. Each iteration peels off one digit from the least-significant end and stores it in the buffer; the loop terminates when the quotient reaches zero. Because digits are generated in LSB-first order, the buffer must be reversed before printing — which the pi_rl pass below does.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "150": {
+    "instruction": "lea  rdi, [rbx - 1]",
+    "why": "LEA ('load effective address') computes the address expression rbx − 1 and stores the pointer value in rdi without reading from memory. Here we want a pointer to the last character (one before the null terminator at rbx), not the byte stored there. A 'mov rdi, rbx' / 'dec rdi' pair would also work but costs two instructions and one flag clobber; LEA fuses the subtraction into a single flag-free operation.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "259": {
+    "instruction": "xor  rdi, rdi",
+    "why": "Syscall 60 (exit) takes the process exit code in rdi. Zero signals success to the parent shell, making 'if ./bin/15_minmax; then ...' idioms work correctly. xor rdi, rdi is 3 bytes versus 7 for 'mov rdi, 0', breaks any false dependency on rdi's stale value, and is recognised by the CPU as a zero idiom at the rename stage so it has no execution latency on the previous use of rdi.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

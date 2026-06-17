@@ -1,0 +1,92 @@
+{
+  "77": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved. The 'call' instruction pushed an 8-byte return address, leaving rsp at 8 mod 16; this push restores 16-byte stack alignment. This function then pushes four more callee-saved registers (r12–r15), consuming 32 more bytes and maintaining alignment for any nested calls. Without the initial 'push rbp', the subsequent four pushes would leave rsp at 8 mod 16 — misaligned before any inner call.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "79": {
+    "instruction": "push r12",
+    "why": "r12 is callee-saved and will hold the input pointer throughout the entire loop, surviving every internal instruction without an explicit reload. The ABI forbids using r12 without saving it, because the code that called conv1d_scalar relies on r12 being unchanged on return. The function needs a stable pointer register that the kernel-load instructions and boundary checks cannot clobber.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "80": {
+    "instruction": "push r13",
+    "why": "r13 is callee-saved and holds the output pointer. Like r12 for the input, r13 must survive the full loop. Using a caller-saved register (e.g., rsi) would be wrong: the imul and add instructions in the inner loop modify many caller-saved registers. By dedicating a callee-saved register to each pointer, we avoid any need to reload them from memory on each iteration.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "81": {
+    "instruction": "push r14",
+    "why": "r14 holds the sample count n. We compare against it on every loop iteration (cmp r15, r14) and also use it to detect the right-boundary condition (i+1 >= n). If we stored n in a caller-saved register, the inner imul or add instructions might overwrite it between iterations, causing the loop to run the wrong number of times.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "82": {
+    "instruction": "push r15",
+    "why": "r15 is the loop index i. It increments every iteration and is compared against n on each pass, so it must survive every instruction in the loop body, including the three movsx/imul/add sequences. Placing the loop counter in a callee-saved register is a deliberate choice: there is no dedicated loop-counter register in 64-bit mode (rcx is used for that only by REP/LOOP, which we are not using here).",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "91": {
+    "instruction": "movsx r8, word [kernel]",
+    "why": "The kernel coefficients are int16_t (16-bit signed) values. MOVSX (Move with Sign-Extension) extends the 16-bit value to 64 bits by replicating the sign bit, correctly representing negative coefficients. Loading all three kernel values once before the loop avoids re-reading memory on every sample iteration — a key optimization since the kernel is constant for the entire convolution.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx"
+  },
+  "92": {
+    "instruction": "movsx r9, word [kernel + 2]",
+    "why": "The second kernel coefficient sits at byte offset 2 (each dw is 2 bytes). Loading it before the loop into a callee-saved register means the multiply 'imul rcx, r9' in the loop reads from a register rather than memory. For a loop over many samples, this hoisting avoids repeated memory traffic for data that never changes — the same principle as loop-invariant code motion in a C compiler.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx"
+  },
+  "100": {
+    "instruction": "xor  rax, rax",
+    "why": "rax is the accumulator for the convolution sum of one output sample. It must be zeroed at the start of every iteration before the three multiply-accumulate taps add into it. xor is preferred over 'mov rax, 0' for its shorter encoding and dependency-breaking property. Because rax is zeroed inside the loop, each output sample starts from scratch.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "105": {
+    "instruction": "movsx rcx, word [r12 + r15*2 - 2]",
+    "why": "Input samples are int16_t, so each occupies 2 bytes; hence the scale factor 2 in the address. The -2 offset reaches in[i-1] (the previous sample). MOVSX sign-extends the 16-bit sample to 64 bits so that the subsequent imul produces a correct signed 64-bit product. Without sign-extension, a negative sample would be interpreted as a large positive number, corrupting the multiply.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx"
+  },
+  "106": {
+    "instruction": "imul rcx, r8",
+    "why": "IMUL performs a signed 64-bit multiply. We use 64-bit operands even though the inputs are int16 because the product of two int16 values can reach 32767 * 32767 ≈ 10^9, which requires 30 bits and would overflow int16. The accumulator (rax) then sums three such products, potentially reaching ~3 billion — comfortably within int64 range but not int32. The output is eventually truncated to int32 when stored.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "125": {
+    "instruction": "mov  [r13 + r15*4], eax",
+    "why": "The output is int32_t (32-bit), occupying 4 bytes per sample — hence the scale factor 4. Writing 'eax' (the low 32 bits of rax) truncates the 64-bit accumulator to 32 bits when storing. For the specific kernel [1, 2, 1] and int16 inputs, the maximum output value is 4 * 32767 = 131068, which fits in int32. Using eax also implicitly zero-extends to clear the upper 32 bits of rax, which is harmless here.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "169": {
+    "instruction": "movd    xmm7, dword [kernel]",
+    "why": "MOVD loads a 32-bit value (one dword) into the low 32 bits of xmm7 and zeros the upper 96 bits. Because two consecutive int16 values share a 32-bit aligned dword, this loads both k0 and k1 in one memory access. Placing the kernel in an XMM register before the loop means the coefficient data is resident in a register across all sample iterations, eliminating repeated memory reads for constant data.",
+    "doc_url": "https://www.felixcloutier.com/x86/movd"
+  },
+  "170": {
+    "instruction": "pinsrw  xmm7, word [kernel+4], 2",
+    "why": "MOVD only loaded k0 and k1 (the first 4 bytes); k2 sits at byte offset 4 and must be patched in separately. PINSRW (Packed Insert Word) places a 16-bit value at word position 2 of xmm7 without disturbing the other lanes. This avoids needing a full 16-byte aligned buffer for the kernel: we load as much as a dword-aligned read allows, then surgically insert the remaining coefficient.",
+    "doc_url": "https://www.felixcloutier.com/x86/pinsrw"
+  },
+  "184": {
+    "instruction": "pxor    xmm0, xmm0",
+    "why": "We build the input vector [in[i-1], in[i], in[i+1], 0, ...] by inserting values one by one with PINSRW. Zero-padding (for boundary samples) means unused lanes must be zero. XOR-ing a register with itself zeros all 128 bits in a single instruction. Doing this at the top of every loop iteration guarantees boundary lanes are zero before any conditional PINSRW is skipped.",
+    "doc_url": "https://www.felixcloutier.com/x86/pxor"
+  },
+  "208": {
+    "instruction": "pmaddwd xmm0, xmm7",
+    "why": "PMADDWD multiplies 8 pairs of int16 values and adds adjacent pairs, producing 4 int32 results. The layout [in[i-1], in[i], in[i+1], 0] paired with [k0, k1, k2, 0] makes dword 0 = k0*in[i-1] + k1*in[i] and dword 1 = k2*in[i+1] + 0*0. Three multiply-accumulate operations therefore collapse into one instruction. The int32 output avoids the overflow that would occur if the products remained in int16.",
+    "doc_url": "https://www.felixcloutier.com/x86/pmaddwd"
+  },
+  "214": {
+    "instruction": "movd   eax, xmm0",
+    "why": "MOVD extracts the low 32 bits of xmm0 into eax. After PMADDWD, dword 0 holds k0*in[i-1] + k1*in[i] — the partial sum of the first two taps. We must move it to a general-purpose register before we can add the second partial sum (k2*in[i+1]) to it, because there is no SSE instruction that adds a specific XMM lane directly to a GPR.",
+    "doc_url": "https://www.felixcloutier.com/x86/movd"
+  },
+  "215": {
+    "instruction": "psrldq xmm0, 4",
+    "why": "PMADDWD placed k2*in[i+1] in dword 1 of xmm0, which sits at byte offset 4. PSRLDQ (Packed Shift Right Logical Double Quadword) shifts the entire register right by 4 bytes, promoting dword 1 into the dword 0 position. The following MOVD can then extract it with the same 'low-32-bits' path, keeping the extraction code uniform without needing a pextrd instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/psrldq"
+  },
+  "218": {
+    "instruction": "add    eax, ecx",
+    "why": "The convolution sum for output sample i is split across two PMADDWD dwords: dword 0 holds the k0 and k1 partial products, dword 1 holds the k2 partial product. This scalar add combines them into the final int32 result. Using 32-bit operands (eax, ecx) is safe because the maximum sum for this kernel is 4 * 32767 = 131068, which fits in int32 with no overflow risk.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  }
+}

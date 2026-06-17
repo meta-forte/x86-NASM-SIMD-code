@@ -1,0 +1,62 @@
+{
+  "64": {
+    "instruction": "push rbp",
+    "why": "The System V AMD64 ABI designates rbp as callee-saved: any function that modifies it must restore the original value before returning. Pushing it here saves the caller's frame pointer. Even for a two-instruction leaf function like asm_add, omitting this breaks debugger backtraces and violates the ABI contract C compilers depend on.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "65": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Setting rbp to the current stack pointer establishes a fixed frame of reference for this call. Local variables live at negative offsets from rbp; stack arguments (if any) live at positive offsets. The frame pointer does not move even if rsp changes during the function body, which is why it is used as the stable base for addressing.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "67": {
+    "instruction": "mov  rax, rdi",
+    "why": "The ABI delivers the first integer argument in rdi, and expects the return value in rax. There is no 'add rax, rsi' form that adds two source registers into a third; x86 add is always destination += source. We therefore copy the first operand into rax first, then add the second operand in-place.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "68": {
+    "instruction": "add  rax, rsi",
+    "why": "rax already holds 'a' and rsi holds 'b' (the second ABI argument). ADD is a two-operand instruction: it adds rsi into rax and stores the result in rax. Because rax is also the ABI return register, no extra move is needed — the sum is already in the right place when we reach 'ret'.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "70": {
+    "instruction": "pop  rbp",
+    "why": "The callee-save contract requires us to restore rbp to its original value before returning. This pop undoes the push at function entry. The CPU then returns to the caller with rbp containing exactly what it contained before the call, so the caller's own frame-pointer arithmetic remains correct.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "84": {
+    "instruction": "sub  rax, rsi",
+    "why": "SUB is x86's two-operand subtract: rax -= rsi. We loaded 'a' into rax first (because rax is both the destination and the return register), so this instruction computes a - b and leaves the result where the ABI expects it, with no extra move needed.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "104": {
+    "instruction": "imul rax, rsi",
+    "why": "The two-operand form of IMUL (imul dst, src) computes dst = dst * src and keeps only the lower 64 bits — exactly what C 'int64_t * int64_t' expects. The upper 64 bits of the full 128-bit product are silently discarded. We use IMUL rather than MUL because our inputs are signed; for unsigned inputs MUL would give the same lower 64 bits but would set flags differently.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "124": {
+    "instruction": "mov  rax, rdi",
+    "why": "IDIV divides the 128-bit value rdx:rax by the given register. The dividend must be in rax (lower 64 bits) before we sign-extend it with CQO. Loading 'a' into rax here sets up that dividend. If we used a different register, IDIV would divide garbage.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "125": {
+    "instruction": "cqo",
+    "why": "IDIV divides rdx:rax (a 128-bit value) by the operand. CQO sign-extends rax into rdx: if rax is negative, rdx becomes all-ones (0xFFFFFFFF_FFFFFFFF); if non-negative, rdx becomes 0. Skipping CQO leaves rdx with whatever garbage was in it, causing IDIV to divide a completely wrong 128-bit number and almost certainly triggering a divide-overflow fault (#DE).",
+    "doc_url": "https://www.felixcloutier.com/x86/cqo"
+  },
+  "127": {
+    "instruction": "idiv rsi",
+    "why": "IDIV performs signed 128-bit / 64-bit division. After the instruction, rax holds the quotient and rdx holds the remainder. We use IDIV (not DIV) because our inputs are signed int64_t; DIV treats its operands as unsigned and would return wrong results for negative inputs.",
+    "doc_url": "https://www.felixcloutier.com/x86/idiv"
+  },
+  "143": {
+    "instruction": "cqo",
+    "why": "asm_mod computes the remainder using the same IDIV instruction as asm_div. IDIV still requires rdx:rax as the 128-bit dividend, so we must sign-extend rax into rdx with CQO before dividing. The remainder ends up in rdx (not rax), which is why the next instruction moves rdx into rax before returning.",
+    "doc_url": "https://www.felixcloutier.com/x86/cqo"
+  },
+  "146": {
+    "instruction": "mov  rax, rdx",
+    "why": "After IDIV, the quotient is in rax and the remainder is in rdx. For asm_mod we want the remainder. The ABI return register is rax, so we copy rdx into rax here. There is no instruction that makes IDIV place the remainder in rax directly — the register assignment is fixed by the instruction architecture.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  }
+}

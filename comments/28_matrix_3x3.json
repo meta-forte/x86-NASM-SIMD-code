@@ -1,0 +1,107 @@
+{
+  "67": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved and must be preserved by any function that uses it. The `call` to this function already pushed an 8-byte return address; this push adds 8 more bytes, starting the callee-save block and keeping rsp on the path to 16-byte alignment before nested calls to scanf. Omitting this push would corrupt rbp in the caller and break any debugger that walks the frame-pointer chain.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "72": {
+    "instruction": "sub rsp, 8",
+    "why": "After push rbp, push rbx, push r12, push r13 (4 × 8 = 32 bytes) and the return address (8 bytes) the total is 40 bytes; 40 mod 16 = 8, so rsp is currently misaligned. This 8-byte pad brings the total to 48 (48 mod 16 = 0), satisfying the ABI rule that rsp must be 16-byte aligned immediately before every `call scanf`. Misalignment can cause silent crashes in library code that uses SSE/AVX aligned loads.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "75": {
+    "instruction": "mov r12d, esi",
+    "why": "Writing to a 32-bit register (r12d) in x86-64 automatically zero-extends the result into the full 64-bit register (r12), clearing any stale high bits from a previous 64-bit value. This is why the 32-bit form is used even though r12 will be compared using 32-bit operations throughout: using `mov r12, rsi` would work too, but `r12d` makes the 32-bit intent explicit and saves a REX.W byte in the encoding.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "76": {
+    "instruction": "xor r13d, r13d",
+    "why": "Zeroing via the 32-bit form `r13d` takes advantage of the x86-64 zero-extension rule: writing r13d clears the upper 32 bits of r13 automatically. This is marginally more compact than `xor r13, r13` (saves the REX.W prefix byte) while achieving the same result: r13 = 0. r13 will hold the loop index i throughout the scanf loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "85": {
+    "instruction": "lea rsi, [rbx + r13*4]",
+    "why": "`lea` computes the address `rbx + r13*4` without reading memory — r13 is the element index, and each `int` is 4 bytes, so `r13*4` is the byte offset to element i. The result is &arr[i], the pointer that scanf needs as its second argument to know where to write the integer it reads. This is the same arithmetic as `&arr[i]` in C: base pointer + index × element size.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "90": {
+    "instruction": "xor eax, eax",
+    "why": "scanf is variadic. The System V AMD64 ABI requires AL to hold the count of XMM floating-point arguments before any variadic call. We pass zero floats, so rax must be 0 before `call scanf`. This must be repeated before each scanf call because the previous iteration's scanf may have left a nonzero value in rax.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "124": {
+    "instruction": "xor ecx, ecx",
+    "why": "ecx is the loop index i for mat_add_3x3. mat_add_3x3 makes no function calls, so a caller-saved register like ecx is safe to use without saving. Zeroing with `xor ecx, ecx` (2 bytes) rather than `mov ecx, 0` (5 bytes) is both smaller and dependency-breaking. Writing ecx also zeroes the upper 32 bits of rcx, which is then used as a 64-bit index in the memory addressing below.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "130": {
+    "instruction": "mov eax, [A3 + rcx*4]",
+    "why": "A3 is the absolute address of the global matrix; `rcx*4` converts element index i into a byte offset (each int is 4 bytes). x86-64 memory addressing requires a 64-bit index register, so rcx (not ecx) is used even though the logical counter is 32-bit — this works correctly because `inc ecx` zero-extends into rcx, keeping rcx always equal to the 32-bit ecx value. The result is loaded into eax (32-bit) because the array elements are 32-bit ints.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "137": {
+    "instruction": "add eax, [B3 + rcx*4]",
+    "why": "`add reg, mem` is a read-modify instruction: it loads 4 bytes from B3[i] and adds them to eax in a single step, replacing what would be a separate `mov edx, [B3+rcx*4]; add eax, edx` with one instruction. eax already holds A3[i] from the previous load, so after this instruction eax = A3[i] + B3[i], ready to be stored into C3.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "189": {
+    "instruction": "sub rsp, 8",
+    "why": "mat_mul_3x3 pushes rbp, rbx, r12, r13, r14, r15 (6 × 8 = 48 bytes) plus the return address (8 bytes) = 56 bytes total; 56 mod 16 = 8. This pad brings the total to 64 bytes (64 mod 16 = 0), restoring 16-byte alignment. mat_mul_3x3 makes no calls, so alignment is not strictly required here — but the pad is good practice and was included to document the arithmetic.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "203": {
+    "instruction": "xor eax, eax",
+    "why": "eax is the dot-product accumulator `sum` for the output element C3[i][j]. It must be reset to 0 at the start of every (i, j) iteration — without this reset, each C3[i][j] would accumulate the sums from all previous elements as well as its own. The 32-bit form `xor eax, eax` suffices because the matrix elements are 32-bit ints and the intermediate products fit in 32 bits for the small values used.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "213": {
+    "instruction": "imul r12d, 3",
+    "why": "`imul` computes the signed integer product r12d × 3 and writes the result back to r12d. The row stride for a 3-column matrix is 3, so multiplying the row index i by 3 gives the flat offset of the first element in row i. This is the assembly equivalent of `i * 3` in the flat-index formula `A3[i*3 + k]`. imul is needed because the stride is a runtime multiply, not a power of two.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "216": {
+    "instruction": "mov ebx, [A3 + r12*4]",
+    "why": "At this point r12 holds the flat index i*3+k. Multiplying by 4 converts it to a byte offset (each int is 4 bytes), and adding to A3's base address gives the address of A3[i][k]. The value is loaded into ebx (callee-saved, 32-bit) to serve as the first multiplicand; it must survive the subsequent index recomputation for B3[k][j] in the next few instructions.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "225": {
+    "instruction": "imul ebx, [B3 + r12*4]",
+    "why": "`imul reg, mem` multiplies the register by the 32-bit value at the memory address in a single instruction. After this, ebx = A3[i][k] × B3[k][j] — one term of the dot product. The two-operand form of imul avoids loading B3[k][j] into a separate register first, saving an instruction and a register. The 32-bit result is correct here because the test values are small enough not to overflow 32 bits.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "295": {
+    "instruction": "imul rbx, 3",
+    "why": "The 64-bit `imul rbx, 3` computes row × 3, the flat index of the first element in this row of the 3-column matrix. Using a 64-bit result (rbx) rather than 32-bit (ebx) is important here because rbx is later used directly in `[C3 + rbx*4]` address expressions, which require 64-bit registers in x86-64 addressing mode.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "301": {
+    "instruction": "movsx rsi, dword [C3 + rbx*4]",
+    "why": "`movsx` (move with sign extension) loads a 32-bit value from memory and sign-extends it to 64 bits in rsi. This is necessary because printf receives all integer arguments as 64-bit values in the general-purpose registers (rsi, rdx, rcx), but C3 stores 32-bit ints. Without sign extension, a negative int like -1 (0xFFFFFFFF) would be incorrectly zero-extended to 0x00000000FFFFFFFF instead of 0xFFFFFFFFFFFFFFFF.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "308": {
+    "instruction": "lea rcx, [rbx + 1]",
+    "why": "`lea` performs `rbx + 1` as pure arithmetic (no memory access), giving the flat index of the second element in the current row (row*3 + 1). This intermediate result is needed both as a memory index for loading C3[row*3+1] and as the index for the third element (row*3+2) computed two instructions later. Using `lea` instead of `add` preserves rbx for reuse.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "316": {
+    "instruction": "movsx rcx, dword [C3 + rcx*4]",
+    "why": "This instruction uses the current value of rcx (= row*3+2) to compute the source address, then overwrites rcx with the loaded and sign-extended value. The CPU evaluates the full address expression `C3 + rcx*4` using the OLD rcx before writing the result — this is safe because x86 always completes address computation before the destination write. The loaded value becomes the fourth printf argument (the third %d).",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "323": {
+    "instruction": "xor eax, eax",
+    "why": "printf is variadic and the ABI requires AL = 0 before the call when no XMM registers carry float arguments. This must be placed here, after all four printf arguments have been set up in rdi, rsi, rdx, rcx — if it were placed earlier, the zero-write to eax would destroy rax before it could be used as an intermediate in the movsx or lea instructions above.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "338": {
+    "instruction": "push rbp",
+    "why": "The C runtime calls `main` via `call main`, pushing an 8-byte return address. Saving rbp here is mandatory because rbp is callee-saved, and this push simultaneously brings rsp to a 16-byte boundary (8 + 8 = 16), satisfying the alignment requirement before the first call inside main. In a function as complex as this main — with many calls to printf, scanf, read_ints, mat_add_3x3, mat_mul_3x3, print_mat_3x3 — correct alignment throughout is critical.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "391": {
+    "instruction": "xor eax, eax",
+    "why": "The System V ABI returns integer results in rax. `main` returns the process exit status; 0 means success. Writing to eax zeroes the entire 64-bit rax (32-bit writes zero-extend in x86-64) in 2 bytes. This value is passed by the C runtime to `exit()`, and the shell reads it as `$?` after the program terminates.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "68": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved — the System V AMD64 ABI requires every function that uses rbp to save and restore it exactly. Without this push, the caller's frame pointer would be silently overwritten. Additionally, entering via 'call' pushed an 8-byte return address, leaving rsp at 8 mod 16; this push restores the 16-byte stack alignment that the ABI mandates before any further 'call' instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "69": {
+    "instruction": "mov  rbp, rsp",
+    "why": "After saving the old rbp, we point rbp at the current stack top to anchor this function's frame. A debugger or stack-unwinder can walk the call chain by following the linked list of saved rbp values. Even though this function has no local variables and never adjusts rsp further, the prologue/epilogue pair keeps stack-frame conventions uniform across all functions and aids crash analysis.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "71": {
+    "instruction": "xor  rax, rax",
+    "why": "xor reg, reg is the canonical idiom to zero a 64-bit register: it encodes in 3 bytes versus 7 bytes for 'mov rax, 0', and modern CPUs treat it as a dependency-breaking operation whose output is independent of the register's prior value. rax serves as both the running byte count in the loop and the function's return value, so zeroing it here initialises both at once.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "80": {
+    "instruction": "pop  rbp",
+    "why": "This is the mandatory counterpart to the 'push rbp' in the prologue. The ABI contract states that callee-saved registers must hold the same values on return as they had on entry. Omitting this pop would leave rsp pointing one slot too low, corrupting the return address the CPU fetches for 'ret', and silently trashing the caller's frame pointer.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "101": {
+    "instruction": "movzx rax, byte [rdi]",
+    "why": "A plain 'mov al, [rdi]' loads one byte but leaves bits 8–63 of rax holding whatever garbage was there from a previous instruction — a classic partial-register hazard. The code later does 'sub rax, rcx' to compute the comparison result, so any stale upper bits would produce a wildly wrong answer. MOVZX (Move with Zero-Extension) zeros all upper bits unconditionally, giving a clean 64-bit unsigned value.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "102": {
+    "instruction": "movzx rcx, byte [rsi]",
+    "why": "Same reasoning as the load of s1's byte: the subtraction 'sub rax, rcx' at .sc_end needs both operands to be pure zero-extended byte values so the sign of the result reflects only the character difference. Zero-extending both bytes into separate 64-bit registers makes the subtraction identical to the C strcmp contract: return (unsigned char)s1[i] - (unsigned char)s2[i].",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "118": {
+    "instruction": "sub   rax, rcx",
+    "why": "The C strcmp specification requires returning a negative, zero, or positive integer depending on whether s1 < s2, s1 == s2, or s1 > s2. Subtracting the two differing byte values delivers exactly that: 'c'(99) - 'd'(100) = -1 (s1 < s2). Because both operands were zero-extended to 64 bits, the result correctly fits in a signed 64-bit integer and no overflow is possible, since both values are in [0, 255].",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "139": {
+    "instruction": "push rbx",
+    "why": "rbx is callee-saved in the System V ABI. We need it to hold the total byte count 'n' across the inner loops where rcx is overwritten as a decreasing loop counter. If we used rcx directly for both purposes, we would lose n before the tail loop. Saving rbx here is mandatory — any caller of my_memcpy would find rbx silently altered on return if we skipped this push.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "141": {
+    "instruction": "mov  rax, rdi",
+    "why": "C's memcpy prototype returns the destination pointer, and the ABI places return values in rax. rdi holds dst on entry but will be advanced byte-by-byte through the destination buffer inside the copy loops, destroying the original address. Capturing rdi into rax right here, before any loop modifies rdi, preserves the original destination as the return value without allocating an extra callee-saved register.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "147": {
+    "instruction": "shr  rcx, 3",
+    "why": "Dividing by 8 with a right-shift costs one cycle, whereas the general 'div' instruction costs 20–90 cycles on modern CPUs. The optimization works because 8 is a power of two: discarding the 3 lowest bits equals integer division by 8. The bits that are discarded — representing n mod 8 — are the leftover bytes that the tail loop handles, so no information is lost.",
+    "doc_url": "https://www.felixcloutier.com/x86/sal:sar:shl:shr"
+  },
+  "161": {
+    "instruction": "and  rcx, 7",
+    "why": "This computes 'n mod 8' — the count of bytes not covered by the 8-byte qword loop — in one cycle using bitwise AND. AND with 7 (binary 0b00000111) retains only the three lowest bits, which is exactly the remainder when dividing by any power-of-two. A general 'div 8' would take ~30 cycles; this AND takes one cycle and produces the identical mathematical result.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "173": {
+    "instruction": "pop  rbx",
+    "why": "Every push must have a matching pop before ret, or rsp will be misaligned and the CPU will return to a garbage address. More importantly, the ABI guarantees that callee-saved registers are preserved across calls, so restoring rbx here fulfils the contract with our caller. The pop must occur before 'pop rbp' and 'ret' to respect the LIFO order of the stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "184": {
+    "instruction": "push rdi",
+    "why": "rdi is the first argument register and is caller-saved, meaning 'call my_strlen' will freely overwrite it. We need this string pointer again after the call as the buffer address for write() (which expects the buffer in rsi, argument 2). Pushing it here and popping it into rsi after the call is the standard pattern for preserving a value across a call without using a callee-saved register.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "189": {
+    "instruction": "pop  rsi",
+    "why": "After my_strlen returns, we call write(1, str, length). write expects the buffer pointer in rsi (argument 2). By popping the string pointer we pushed before the call directly into rsi, we restore the value and position it in the right register in one instruction. The stack acts here as a zero-overhead single-slot temporary that survives the call without occupying a callee-saved register.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "203": {
+    "instruction": "push r12",
+    "why": "r12 is callee-saved. print_i64 uses r12 to hold the start of the digit-formatting buffer across its entire execution, including across the internal write syscall. Because caller-saved registers (rdi, rsi, rax, rcx, rdx, r8–r11) can be overwritten by any call — including a syscall — only callee-saved registers like r12–r15 and rbx are safe to rely on across those boundaries.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "204": {
+    "instruction": "push r13",
+    "why": "r13 is callee-saved. It serves as a sign flag (0 = positive, 1 = negative) that must survive multiple internal calls to the digit-printing loop and the final write syscall. If a caller-saved register like rdi were used instead, the flag would be destroyed the first time any internal call is made, causing every number to print as positive.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  }
+}

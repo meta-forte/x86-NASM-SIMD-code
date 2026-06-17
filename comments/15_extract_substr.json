@@ -1,0 +1,102 @@
+{
+  "47": {
+    "instruction": "push    rbp",
+    "why": "read_string calls scanf, which is not a leaf function from the ABI's perspective. rbp is callee-saved, so even this thin wrapper must push and restore it. Doing so also maintains 16-byte stack alignment: on entry rsp is misaligned by 8 (due to the call instruction's return-address push), so push+pop restores it symmetrically, keeping the stack correctly aligned when scanf is called.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "48": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Captures rsp as the frame pointer for read_string. Although there are no local variables, the frame pointer lets debuggers correctly identify this function's frame boundary when unwinding the stack. Without it, stack traces would show a broken or merged frame at the scanf boundary.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "49": {
+    "instruction": "xor     eax, eax",
+    "why": "scanf is variadic; the System V AMD64 ABI requires AL to hold the count of XMM floating-point arguments before any variadic call. We pass zero floats, so eax must be 0. 'xor eax, eax' is the canonical zero idiom: 2 bytes vs 5 for 'mov eax, 0', implicitly zeroes all of rax above bit 31, and breaks any false output dependency the CPU might track on eax's previous value.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "73": {
+    "instruction": "push    rbp",
+    "why": "Beginning of main's prologue. The C runtime calls main as a normal function and expects rbp to be preserved on return. This push also sets up the alignment arithmetic: (8 bytes return address) + (8 bytes saved rbp) + (544 bytes sub rsp) = 560, which is 560/16 = 35 with no remainder, so rsp is 16-byte aligned before every call in main.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "74": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Freezes the stack pointer as the frame base. The four large locals — input buffer at [rbp-256], start at [rbp-264], length at [rbp-272], output buffer at [rbp-528] — are all addressed as fixed negative offsets from rbp. Even after 'sub rsp, 544' moves rsp far down, rbp stays constant, making every local-variable address predictable.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "75": {
+    "instruction": "sub     rsp, 544",
+    "why": "The stack frame holds: 256-byte input buffer + 8-byte start + 8-byte length + 256-byte output buffer = 528 bytes of locals. Rounding up to 544 keeps the total frame size (8 + 8 + 544 = 560) a multiple of 16, satisfying the System V ABI requirement that rsp be 16-byte aligned immediately before every call instruction so that SIMD and SSE instructions inside callees can use aligned memory operations.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "78": {
+    "instruction": "lea     rdi, [rel prompt_str]",
+    "why": "'lea' computes and loads an address — it does not read the bytes at that address. The 'rel' modifier emits a RIP-relative encoding so the address is expressed as a PC-relative displacement, making it valid regardless of where the binary is loaded in memory (PIE/ASLR). Without 'rel', the assembler would embed an absolute 64-bit address that the dynamic linker cannot relocate, producing a crash or link error.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "83": {
+    "instruction": "lea     rsi, [rbp - 256]",
+    "why": "scanf's second argument must be a pointer to the destination buffer, not the buffer's contents. 'lea' computes the address of the stack slot without dereferencing it. If 'mov rsi, [rbp-256]' were used instead, rsi would receive the first 8 bytes of the uninitialized buffer interpreted as an address — scanf would then write the string to some garbage location rather than into the stack buffer.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "107": {
+    "instruction": "mov     r12, rax",
+    "why": "strlen returns the string length in rax, but rax is caller-saved and will be destroyed by the next call instruction (the prompt printf calls). r12 is callee-saved and survives all subsequent calls unchanged. Stashing the length here avoids calling strlen a second time later and avoids spilling to a stack slot that could be accidentally overwritten by an off-by-one in scanf's format string.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "110": {
+    "instruction": "mov     r13, [rbp - 264]",
+    "why": "This loads the user-supplied start index from its stack slot into callee-saved r13. Using a callee-saved register means start is still valid after any printf or scanf calls in the bounds-check path. If start were left in a caller-saved register such as rcx or rdx, the first call instruction in the bounds-error branch would silently overwrite it.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "114": {
+    "instruction": "test    r13, r13",
+    "why": "'test reg, reg' ANDs the register with itself, setting SF and ZF without modifying the register. The following 'js .bounds_error' catches negative start values. This guard is necessary because scanf reads start as a signed 64-bit integer; a negative value passed to 'add rsi, r13' would subtract from the input buffer's base address, causing the copy loop to read memory before the stack buffer — a potential stack disclosure or crash.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "115": {
+    "instruction": "js      .bounds_error",
+    "why": "'js' branches when SF=1, which means r13 holds a negative value after the preceding 'test'. This prevents the copy loop from running with a negative offset. Without this check, 'add rsi, r13' on the copy setup path would step the source pointer before the input buffer, reading arbitrary stack data and likely causing a segfault or silent information leak.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "121": {
+    "instruction": "jle     .bounds_error",
+    "why": "'jle' (jump if less-or-equal, i.e. the result is ≤ 0) comes after 'test r14, r14' and catches both length = 0 and length < 0 in a single branch. A zero length would produce an empty output with no useful meaning; a negative length from user input would make the copy loop run for approximately 2^64 iterations, overwriting the entire stack before hitting a segfault. One instruction handles both invalid cases.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "124": {
+    "instruction": "mov     rax, r12",
+    "why": "We need to compute 'strlen - start' (the number of characters available from the start position to the end of the string) in order to clamp the requested length. rax is used as a scratch register for this arithmetic since it is caller-saved and freely expendable. r12 (strlen) and r13 (start) must remain intact for later use, so the subtraction is staged into rax rather than modifying either.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "125": {
+    "instruction": "sub     rax, r13",
+    "why": "This computes 'available = strlen - start', the maximum number of bytes that can be safely copied starting from position start. The next 'cmp r14, rax' uses this to decide whether to clamp. Without this clamping, a user-supplied length that extends past the end of the string would copy bytes from adjacent stack slots into the output buffer — reading callee-saved registers, return addresses, or other locals.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "128": {
+    "instruction": "mov     r14, rax",
+    "why": "If the requested copy length exceeds the available characters (strlen - start), we silently clamp it to the available count rather than aborting. r14 is updated here from rax (which holds 'strlen - start') so the copy loop uses the safe, bounded count. This is the assembly equivalent of C's 'length = min(length, strlen - start)' — a single store completes the clamping.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "133": {
+    "instruction": "add     rsi, r13",
+    "why": "rsi was set to the base of the input buffer ([rbp-256]). Adding r13 (the start index) advances rsi to &input_buf[start], the exact first byte of the substring. This is the assembly equivalent of C pointer arithmetic 'buf + start'. The bounds checks above guarantee r13 is non-negative and less than strlen, so this cannot step outside the buffer.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "150": {
+    "instruction": "mov     byte [rdi], 0",
+    "why": "The output buffer is an uninitialized stack allocation; there is no guarantee that the byte after the last copied character is zero. printf's '%s' formatter advances until it finds a null byte, so without this explicit terminator, printf would print the substring followed by arbitrary stack garbage. This single write is the difference between correct output and a security-relevant stack data leak.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "165": {
+    "instruction": "xor     eax, eax",
+    "why": "Sets main's return value (process exit code) to 0, indicating success. This instruction appears at .exit, which is reached both after a successful print and after the bounds-error print, so it serves as the single exit-code setup point. 'xor eax, eax' is preferred: 2 bytes, implicit zero of rax, no false dependency.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "166": {
+    "instruction": "leave",
+    "why": "'leave' performs 'mov rsp, rbp; pop rbp' in a single byte, fully undoing the frame setup from lines 73-75. Without it, rsp would still point 544 bytes below the frame base; the following 'ret' would pop the wrong memory word as the return address, transferring control to a garbage location and crashing the process.",
+    "doc_url": "https://www.felixcloutier.com/x86/leave"
+  }
+}

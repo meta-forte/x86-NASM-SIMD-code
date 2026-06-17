@@ -1,0 +1,72 @@
+{
+  "84": {
+    "instruction": "push rbp",
+    "why": "sad_16x16_scalar is declared global for C linking (the file exports it), meaning any C caller expects the System V ABI callee-save guarantee that rbp is unchanged on return. The push also corrects stack alignment from 8 mod 16 (after 'call') to 0 mod 16 before the three subsequent pushes, ensuring the stack is 16-byte aligned as required if this function ever makes a nested call.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "85": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Establishes a stable frame-base pointer. The three subsequent pushes (r12, r13, rbx) move rsp down 24 bytes; rbp stays at the post-push-rbp position. When gdb unwinds the call stack it reads [rbp] to find the saved frame pointer of the caller, reconstructing the chain. Without this, backtrace output from profilers and crash handlers would be broken.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "88": {
+    "instruction": "push rbx",
+    "why": "rbx is the SAD accumulator and must survive the entire 16×16 double loop (256 iterations). None of those iterations call any function, so in principle rbx could be used freely. However, pushing it unconditionally makes the function safe against future edits that might add a helper call inside the loop, and it establishes correct ABI discipline since this is a publicly exported C-callable function.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "93": {
+    "instruction": "xor  rbx, rbx",
+    "why": "Initialises the SAD accumulator to zero. Choosing rbx (callee-saved) rather than rax or rdx (caller-saved) for the accumulator means the running sum is guaranteed to survive any function call we might add inside the loop. The XOR-self zero idiom avoids a 7-byte 'mov rbx, 0' encoding and breaks any false dependency the CPU might have on rbx's previous value.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "165": {
+    "instruction": "pxor  xmm0, xmm0",
+    "why": "Zeroes all 128 bits of xmm0 in one instruction for use as the PSADBW partial-sum accumulator. PXOR-self is the canonical SIMD zero idiom: 2-byte encoding, latency zero on modern Intel CPUs (it is recognised as a zeroing idiom and retired without executing on the execution port), and it breaks any false dependency the CPU's rename unit might have on xmm0 from a prior instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/pxor"
+  },
+  "183": {
+    "instruction": "movdqu xmm1, [r9]",
+    "why": "Loads 16 consecutive bytes (one full row of the 16×16 current block) into xmm1 with a single instruction. The unaligned form MOVDQU is used because the current_block may not be 16-byte aligned at run time (even though the .data section uses 'align 32', the row pointer r9 is computed as base + row*16, and row*16 is a multiple of 16 but not necessarily of 32 for odd rows). MOVDQU avoids the #GP fault that MOVDQA would raise on misalignment.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu:vmovdqu8:vmovdqu16:vmovdqu32:vmovdqu64"
+  },
+  "188": {
+    "instruction": "psadbw xmm1, xmm2",
+    "why": "PSADBW ('Packed Sum of Absolute Differences of Bytes') performs 16 absolute-difference computations and two 8-way horizontal sums in one instruction. Specifically, it computes |xmm1[i] - xmm2[i]| for i in 0..7, sums those 8 values into a 16-bit result in bits [15:0], then repeats for bytes 8-15 and stores in bits [79:64]. The scalar equivalent — a loop over 16 bytes with MOV, SUB, JGE/NEG, ADD — takes at least 6 instructions per byte, or 96 instructions for one 16-byte row. PSADBW replaces all of that with a single instruction, making it the cornerstone of FFmpeg's motion estimation SAD kernels.",
+    "doc_url": "https://www.felixcloutier.com/x86/psadbw"
+  },
+  "193": {
+    "instruction": "paddq  xmm0, xmm1",
+    "why": "Accumulates the two 16-bit partial sums from PSADBW by adding them as 64-bit quantities into xmm0. PADDQ ('Packed Add Quadwords') treats each 64-bit lane independently with no overflow concern: a partial sum from one 16-byte row is at most 16 * 255 = 4080, fitting easily in 16 bits; after 16 rows the accumulated value is at most 16 * 4080 = 65280, still within 16 bits, but PADDQ's 64-bit addition gives abundant headroom and avoids any reasoning about overflow.",
+    "doc_url": "https://www.felixcloutier.com/x86/paddq"
+  },
+  "203": {
+    "instruction": "psrldq xmm0, 8",
+    "why": "PSRLDQ ('Packed Shift Right Logical Double Quadword') byte-shifts xmm0 right by 8 bytes, placing the upper 64-bit partial sum (bits [79:64] from the accumulated PSADBW results) into the lower 64-bit position (bits [15:0]). After this shift, MOVQ can extract that value into rcx for a final scalar add. This two-step horizontal reduction — shift then scalar add — is the standard pattern for extracting the total from a two-lane PSADBW accumulator.",
+    "doc_url": "https://www.felixcloutier.com/x86/psrldq"
+  },
+  "237": {
+    "instruction": "vpxor ymm0, ymm0, ymm0",
+    "why": "Zeroes all 256 bits of ymm0 for use as the AVX2 VPSADBW accumulator. The three-operand VEX form (dst, src1, src2) is required by AVX/AVX2 encoding rules — two-operand SSE forms like 'pxor xmm0, xmm0' only set the lower 128 bits when used in VEX context. The CPU recognises VPXOR ymm, ymm, ymm as a zero idiom and executes it without reading ymm0's old value, breaking false dependencies on the accumulator.",
+    "doc_url": "https://www.felixcloutier.com/x86/pxor"
+  },
+  "260": {
+    "instruction": "vpsadbw xmm1, xmm1, xmm2",
+    "why": "This is the VEX-encoded (AVX) form of PSADBW operating on 128-bit XMM registers. It is chosen here over the 256-bit VPSADBW ymm form because each block row is only 16 bytes — there are not 32 bytes of current and reference data available contiguously per row with variable stride. The three-operand VEX encoding avoids the implicit destructive behaviour of the legacy SSE two-operand form (SSE PSADBW xmm1, xmm2 modifies xmm1), making the register allocation intent explicit.",
+    "doc_url": "https://www.felixcloutier.com/x86/psadbw"
+  },
+  "271": {
+    "instruction": "vextracti128 xmm1, ymm0, 1",
+    "why": "After accumulating 16 rows of VPSADBW partial sums into ymm0, the total is split across the lower 128 bits and the upper 128 bits (lanes 0 and 1 of the YMM register). VEXTRACTI128 with the immediate operand 1 copies the upper 128-bit lane into xmm1, making it available for a final VPADDQ to add the two halves together. Without this extraction, we could not add the two 128-bit halves — there is no instruction that directly adds the two 128-bit lanes of one YMM register.",
+    "doc_url": "https://www.felixcloutier.com/x86/vextracti128:vextracti32x4:vextracti64x2:vextracti32x8:vextracti64x4"
+  },
+  "281": {
+    "instruction": "vzeroupper",
+    "why": "After using VPSADBW, VPADDQ, and VEXTRACTI128 — all AVX2 instructions that write 256-bit YMM registers — the upper 128 bits of ymm0-ymm15 are 'dirty'. Any SSE-compiled caller that follows will suffer a state-transition penalty (microcode assist) on Intel Haswell/Broadwell/Skylake unless the dirty state is cleared first. VZEROUPPER clears bits 128-255 of all YMM registers and removes the penalty. This is mandatory at the exit of every function that uses 256-bit AVX instructions and is called from non-AVX code.",
+    "doc_url": "https://www.felixcloutier.com/x86/vzeroall:vzeroupper"
+  },
+  "201": {
+    "instruction": "movq   rax, xmm0",
+    "why": "Extracts the lower 64 bits of xmm0 into the general-purpose register rax for use in the scalar final addition. MOVQ from XMM to GPR is the standard way to 'descend' from the SIMD domain back to integer arithmetic. The result will be the sum of the lower-half partial sums accumulated by PADDQ; the upper-half partial sums are retrieved via PSRLDQ in the next instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/movd:movq"
+  }
+}

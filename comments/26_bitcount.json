@@ -1,0 +1,87 @@
+{
+  "81": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved. Entering via 'call' pushed an 8-byte return address, leaving rsp at 8 mod 16; this push re-establishes 16-byte alignment so that any subsequent 'call' inside this function (e.g., to popcount_kernighan from the outer loop) satisfies the ABI alignment requirement. Without it, SSE/AVX code called deeper in the chain that uses aligned stack loads would crash with a #GP fault.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "84": {
+    "instruction": "xor  rax, rax",
+    "why": "rax is both the bit counter and the function's return value. Setting it to zero with xor is shorter and faster than 'mov rax, 0' (2 bytes vs 7 bytes, and it breaks the false dependency on the previous value of rax). Starting at zero ensures the first iteration of the Kernighan loop adds 1 correctly for the first set bit found.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "92": {
+    "instruction": "and  rdi, rcx",
+    "why": "This is the heart of Kernighan's trick. Subtracting 1 from a value flips all bits from the lowest set bit downward (e.g., 0b101100 - 1 = 0b101011). ANDing the original with that result clears exactly the lowest set bit and leaves everything above it unchanged. The loop therefore runs exactly k iterations for a value with k set bits, rather than always running 64 iterations like a naive bit-test loop would.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "110": {
+    "instruction": "push r14",
+    "why": "r14 is callee-saved. It holds the buffer pointer across repeated calls to popcount_kernighan inside the loop. Because popcount_kernighan uses rdi (a caller-saved register), each call would destroy the buffer pointer if we kept it in rdi. A callee-saved register like r14 survives every internal call without any extra save/restore in the loop body.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "111": {
+    "instruction": "push r15",
+    "why": "r15 is callee-saved. It accumulates the running total across all bytes in the buffer. We cannot use a caller-saved register (like rax) for the total because the result of each popcount_kernighan call is returned in rax, which would overwrite the total. A callee-saved register survives each call and lets us add the per-byte result with a simple 'add r15, rax'.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "122": {
+    "instruction": "movzx rdi, byte [r14 + rbx]",
+    "why": "popcount_kernighan expects a 64-bit value in rdi. A raw byte load ('mov dil, [...]') would leave bits 8–63 of rdi holding stale values, making the loop count spurious high bits. MOVZX zero-extends the byte to the full 64-bit register, so the Kernighan loop counts exactly the bits present in the byte and no others.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "155": {
+    "instruction": "movdqu xmm5, [popcount_lut]",
+    "why": "The 16-entry nibble popcount table must live in an XMM register for PSHUFB to use it as a lookup source. Loading it once before the computation (rather than reloading it every iteration) avoids a memory access on the critical path. MOVDQU (unaligned) is used because the table is declared with 'align 16' but we want to keep the code correct even without that alignment guarantee.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu"
+  },
+  "165": {
+    "instruction": "movdqu xmm0, [rdi]",
+    "why": "This loads all 16 input bytes in one instruction rather than 16 scalar loads. MOVDQU (Move Unaligned Double Quadword) accepts any pointer alignment, so the caller does not need to guarantee that the buffer starts on a 16-byte boundary. The 16x throughput improvement over scalar loading is why SIMD exists: a single memory transaction fills the entire 128-bit register.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu"
+  },
+  "168": {
+    "instruction": "movdqa xmm1, xmm0",
+    "why": "We need a copy of the input because the next PAND will destructively overwrite the register, but we still need the original to extract the high nibbles. MOVDQA (Move Aligned Double Quadword) between two registers is always valid (registers are always 'aligned') and is the standard idiom for duplicating an XMM value before a destructive operation.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqa"
+  },
+  "169": {
+    "instruction": "pand   xmm1, xmm6",
+    "why": "PAND isolates the low 4 bits of each byte in parallel across all 16 lanes. xmm6 contains 0x0F repeated 16 times, so this masks out the high nibble of every byte. The low nibbles (values 0–15) become the indices into the PSHUFB lookup table in the next step. Without this mask, the high nibble bits would produce out-of-range table indices.",
+    "doc_url": "https://www.felixcloutier.com/x86/pand"
+  },
+  "174": {
+    "instruction": "psrlw  xmm2, 4",
+    "why": "PSRLW shifts all eight 16-bit words right by 4 bits, which moves the high nibble of each byte into its lower-4-bit position. Word (16-bit) granularity is critical here: a byte-level shift instruction does not exist, but the 16-bit shift moves both the low byte's high nibble and the high byte's high nibble correctly. The subsequent PAND with 0x0F cleans any cross-byte contamination introduced by the word-level shift.",
+    "doc_url": "https://www.felixcloutier.com/x86/psrlw"
+  },
+  "183": {
+    "instruction": "pshufb xmm5, xmm1",
+    "why": "PSHUFB treats each byte of xmm1 as an index and replaces it with the corresponding byte from xmm5 (the LUT). Because each low-nibble value is already in [0, 15], it indexes directly into the 16-entry popcount table, fetching the bit count for that nibble. This performs 16 parallel table lookups in a single instruction — something that would require 16 separate scalar loads with intervening branch or shift logic.",
+    "doc_url": "https://www.felixcloutier.com/x86/pshufb"
+  },
+  "191": {
+    "instruction": "paddb  xmm5, xmm4",
+    "why": "The popcount of each byte equals the popcount of its low nibble plus the popcount of its high nibble. PADDB adds 16 pairs of bytes simultaneously to produce the per-byte popcount in every lane. Each nibble popcount is at most 4, so the sum is at most 8 — well within a byte's range — making PADDB (non-saturating) safe; no overflow is possible.",
+    "doc_url": "https://www.felixcloutier.com/x86/paddb"
+  },
+  "197": {
+    "instruction": "pxor   xmm0, xmm0",
+    "why": "We need a register of all zeros to serve as the second operand of PSADBW, which will sum the per-byte popcounts. XOR-ing a register with itself is the canonical idiom: it encodes in 4 bytes (shorter than loading a zero constant from memory), and modern CPUs recognize it as a zero-idiom and avoid any data dependency on the register's previous value.",
+    "doc_url": "https://www.felixcloutier.com/x86/pxor"
+  },
+  "199": {
+    "instruction": "psadbw xmm5, xmm0",
+    "why": "PSADBW computes the sum of absolute differences between corresponding bytes of two registers. With the second operand all-zero, |byte - 0| = byte, so it becomes a horizontal byte sum. It stores the sum of bytes 0–7 in the low 16 bits of the low 64-bit half and the sum of bytes 8–15 in the low 16 bits of the high 64-bit half. This avoids the need for eight individual add instructions to accumulate the 16 per-byte counts.",
+    "doc_url": "https://www.felixcloutier.com/x86/psadbw"
+  },
+  "203": {
+    "instruction": "movq   rax, xmm5",
+    "why": "MOVQ moves the low 64 bits of an XMM register into a general-purpose register. PSADBW placed the sum of bytes 0–7 in the low 64 bits of xmm5, so this transfers that partial total into rax to begin scalar arithmetic. There is no direct 'add XMM lane to GPR' instruction, so we must extract each half separately before adding them.",
+    "doc_url": "https://www.felixcloutier.com/x86/movq"
+  },
+  "205": {
+    "instruction": "psrldq xmm5, 8",
+    "why": "PSRLDQ shifts the entire 128-bit register right by 8 bytes (64 bits), moving the upper 64-bit half — which holds the sum of bytes 8–15 — into the lower position. After this shift, movq rcx, xmm5 extracts that second partial sum. This two-step extract-and-shift pattern is the standard way to reduce a 128-bit SIMD result to a single scalar when no horizontal-add instruction is available.",
+    "doc_url": "https://www.felixcloutier.com/x86/psrldq"
+  }
+}

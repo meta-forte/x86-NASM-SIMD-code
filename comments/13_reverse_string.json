@@ -1,0 +1,82 @@
+{
+  "49": {
+    "instruction": "push rbp",
+    "why": "The System V AMD64 ABI classifies rbp as callee-saved. str_len is called from str_reverse, which is called from demo_reverse — all three functions use rbp as their frame pointer. Saving and restoring rbp at every level maintains a correct chain: each saved rbp points back to the previous frame's rbp, letting debuggers and unwinders walk the entire call stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "50": {
+    "instruction": "mov  rbp, rsp",
+    "why": "After saving the old frame pointer, we set rbp to the current stack pointer. This creates a stable base for the current frame that does not change even if rsp moves later. For a small function like str_len that has no local variables, this mainly benefits debuggability: the rbp chain lets any profiler or crash analyser reconstruct which function called str_len and from where.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "52": {
+    "instruction": "xor  rax, rax",
+    "why": "rax is both the return register (its old value may be the return value of the preceding call) and the loop counter here. Without zeroing it, the count would start at a garbage value and produce a completely wrong string length. xor rax, rax is the canonical zero idiom: 3 bytes, no immediate operand, and the CPU's rename stage eliminates any false dependency on rax's stale caller-return value.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "54": {
+    "instruction": "cmp  byte [rdi + rax], 0",
+    "why": "C strings are null-terminated, so finding the length means scanning until a zero byte appears. The 'byte' qualifier is essential: without it the assembler would generate a 32-bit or 64-bit comparison, reading up to 7 bytes past the current position into potentially unmapped memory. rdi + rax combines the string base pointer and the running count to form the address of the next character to test.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "78": {
+    "instruction": "push rbx",
+    "why": "str_reverse uses rbx as the left pointer throughout the two-pointer swap loop, including across the call to str_len at the start of the function. rbx is callee-saved, so it survives that call intact — unlike caller-saved registers (rax, rcx, rdx, rsi, rdi, r8–r11) which str_len is free to overwrite. Saving rbx on entry and restoring it before ret honours the ABI contract to whoever called str_reverse.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "79": {
+    "instruction": "push r12",
+    "why": "r12 holds the right pointer (address of the last character) for the entire swap loop. Allocating both pointer registers from the callee-saved set (rbx for left, r12 for right) means neither pointer needs to be reloaded from a stack slot on each iteration. This also means str_reverse can safely be called from any function that stores live values in r12 without breaking the caller.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "87": {
+    "instruction": "cmp  rax, 1",
+    "why": "Before computing the right pointer as rdi + rax - 1, we must guard against degenerate cases. For an empty string rax = 0, so rdi + rax - 1 = rdi - 1 — a pointer one byte before the string, pointing into unrelated memory. For a single character rax = 1, so left and right would be the same address — swapping a byte with itself wastes cycles but is harmless; skipping it is cleaner. Both are caught by the JLE below.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "88": {
+    "instruction": "jle  .sr_done",
+    "why": "JLE ('jump if less or equal', i.e. signed rax <= 1) handles both the empty string (rax = 0) and the single-character string (rax = 1) with one branch. Using JE would only catch length 1; an empty string (length 0) would fall through, compute a wild right pointer, and either read garbage or fault. JLE makes the function correct for all valid C string inputs.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "91": {
+    "instruction": "mov  rbx, rdi",
+    "why": "The two-pointer algorithm starts the left pointer at the first byte of the string. Copying rdi into the callee-saved rbx separates the pointer (which inc will advance) from the original base address, which rdi still holds. Using a callee-saved register means the left pointer survives any hypothetical nested call without needing to be pushed and popped around it.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "92": {
+    "instruction": "lea  r12, [rdi + rax - 1]",
+    "why": "LEA computes rdi + rax - 1 and stores the resulting address in r12 without reading from memory. rdi is the string start and rax is the length, so rdi + rax points at the null terminator; subtracting 1 gives the last real character — the right pointer's starting position. LEA fuses the base + index + offset into a single flag-free instruction; the equivalent 'mov r12, rdi / add r12, rax / dec r12' would take three instructions.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "97": {
+    "instruction": "cmp  rbx, r12",
+    "why": "The two-pointer algorithm must stop as soon as the pointers meet or cross. If left == right, we are at the middle element of an odd-length string and it is already in place. If left > right, every pair has been swapped and the pointers have crossed. The subsequent JGE checks for both conditions (>=) so we do not attempt a swap when the pointers are at the same or an invalid position.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "98": {
+    "instruction": "jge  .sr_done",
+    "why": "JGE ('jump if greater or equal') exits the loop for both the equal case (odd-length strings where left = right = middle) and the crossed case (even-length strings where left overtook right after the last swap). Using JG ('greater only') would process the middle element of an odd-length string one extra time — swapping it with itself, harmless but wasteful and incorrect conceptually.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "100": {
+    "instruction": "mov  al, [rbx]",
+    "why": "al is the low 8-bit alias of rax, loading a single byte from memory. Using a byte-sized load is both necessary (we are swapping individual characters, not 8-byte words) and safe: a word-sized load could cross a page boundary and fault, or overwrite three bytes when we only want to write one back. Loading into al leaves the upper 56 bits of rax available for scratch use without interference.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "101": {
+    "instruction": "mov  cl, [r12]",
+    "why": "x86 has no 'swap memory with memory' instruction (XCHG works only with a register and memory, not memory-to-memory). The standard pattern is to load both bytes into separate byte registers (al and cl) and then write them back in swapped order. cl (the low byte of rcx) serves as the temporary for the right character, keeping the swap entirely in registers with no extra stack slot.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "105": {
+    "instruction": "inc  rbx",
+    "why": "After each swap, the left pointer advances one byte toward the center of the string. INC is preferred over 'add rbx, 1' because it encodes in fewer bytes (3 bytes REX-prefixed for 64-bit vs 4 for ADD with an immediate) and on many microarchitectures the CPU can macro-fuse INC with the subsequent CMP/JGE into a single micro-op. The pointer advances until it meets or passes the right pointer.",
+    "doc_url": "https://www.felixcloutier.com/x86/inc"
+  },
+  "106": {
+    "instruction": "dec  r12",
+    "why": "Symmetrically, the right pointer retreats one byte toward the center. The combination of 'inc rbx' and 'dec r12' shrinks the unswapped region by one character on each side per iteration, so the loop performs exactly ceil(length / 2) swaps — the theoretical minimum for in-place reversal. When rbx >= r12 the pointers have met or crossed and every character pair has been exchanged.",
+    "doc_url": "https://www.felixcloutier.com/x86/dec"
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "59": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved by the System V ABI. u64_to_dec will be called from print_u64, which is itself called from _start. Each level of the call chain must independently save and restore rbp so that the frame-pointer chain remains intact for all callers above it.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "61": {
+    "instruction": "push rbx",
+    "why": "rbx is callee-saved. We use it as a write pointer into the digit buffer, and we will call other instructions that could theoretically clobber caller-saved registers. By saving rbx here we are free to use it throughout the function body and the caller will never see it change.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "62": {
+    "instruction": "push r12",
+    "why": "r12 through r15 are callee-saved registers. We use r12 to hold the fixed start address of the digit buffer (needed for the reversal step and for computing string length). Choosing a callee-saved register means we do not need to save/restore it around any inner calls — it is guaranteed to survive.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "69": {
+    "instruction": "test rax, rax",
+    "why": "TEST performs a bitwise AND of rax with itself without modifying rax, setting ZF (zero flag) if the result is zero. This is the idiomatic way to check whether a register is zero. It is 3 bytes (REX + opcode + ModRM) compared to 'cmp rax, 0' which is 7 bytes, and it avoids a false operand dependency on the immediate.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "78": {
+    "instruction": "xor  rdx, rdx",
+    "why": "The unsigned DIV instruction divides rdx:rax (a 128-bit value) by the operand. For a normal 64-bit division where the dividend fits in rax, rdx must be zero before the divide — otherwise the full 128-bit dividend includes garbage in rdx and the quotient overflows. Clearing rdx with XOR is the canonical way to prepare for unsigned DIV.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "80": {
+    "instruction": "div  rcx",
+    "why": "DIV performs unsigned 128-bit / 64-bit division: rdx:rax ÷ rcx. After the instruction, rax = quotient and rdx = remainder. We use DIV (not IDIV) because Fibonacci numbers are unsigned; IDIV would interpret large values with bit 63 set as negative. Repeatedly dividing by 10 and collecting remainders is the standard digit-extraction algorithm.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "81": {
+    "instruction": "add  dl, '0'",
+    "why": "The remainder in rdx after dividing by 10 is a digit value 0-9. Adding the ASCII code of '0' (48) converts it to the corresponding ASCII character '0'–'9'. We only need to touch dl (the lowest byte of rdx) because the digit is guaranteed to fit in one byte.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "95": {
+    "instruction": "lea  rdi, [rbx - 1]",
+    "why": "After the digit loop, rbx points one byte past the last written digit (at the null terminator). We want rdi to point to the last digit itself so the reversal loop can work inward from both ends. LEA computes the address without a memory access — it is just arithmetic on the pointer, not a load.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "111": {
+    "instruction": "pop  r12",
+    "why": "We saved r12 on the stack at function entry (callee-save obligation). The pops must happen in reverse push order (LIFO). r12 was the last callee-saved register pushed, so it is the first to be popped, restoring the caller's r12 value before we return.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "161": {
+    "instruction": "mov  r13, 0",
+    "why": "r13 is a callee-saved register we chose deliberately to hold the 'previous' Fibonacci term. Because _start never returns (it exits via syscall), we do not technically need to save/restore r13. However, we choose r13-r15 specifically because print_u64 (which we call in the loop) is required by the ABI to preserve them — so our loop variables will not be clobbered by the call.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "163": {
+    "instruction": "mov  r15, 1",
+    "why": "r15 is the loop counter, tracking which Fibonacci term we are printing. We store it in r15 (callee-saved) for the same reason as r13 and r14: calling print_u64 must not destroy the counter. A caller-saved register like rcx would be zeroed by the inner call, causing the loop to malfunction.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "174": {
+    "instruction": "mov  rax, r14",
+    "why": "We need to update both r13 (previous) and r14 (current) simultaneously. r14's new value is r13 + r14, but we need the old r14 to become the new r13. Saving r14 into rax first lets us perform the update without a temporary variable: after 'add r14, r13' destroys the old r14, rax still holds it for the assignment to r13.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "175": {
+    "instruction": "add  r14, r13",
+    "why": "This is the Fibonacci recurrence F(n+1) = F(n) + F(n-1) expressed in a single instruction. r14 was F(n) and r13 was F(n-1); after this add, r14 becomes F(n+1). We must be careful to save the old r14 (done in the previous instruction) before overwriting it.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "183": {
+    "instruction": "xor  rdi, rdi",
+    "why": "Before calling the exit syscall, rdi must hold the exit code. Zero means success. 'xor edi, edi' (or equivalently xor rdi, rdi) is the idiomatic zero-register idiom: 3 bytes vs 7 for 'mov rdi, 0', and the CPU recognizes it as a dependency-breaking zero idiom. Writing to the 32-bit edi register automatically zeroes the upper 32 bits of rdi on x86-64.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

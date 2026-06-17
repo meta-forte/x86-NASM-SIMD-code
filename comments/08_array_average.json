@@ -1,0 +1,117 @@
+{
+  "39": {
+    "instruction": "push    rbp",
+    "why": "rbp is callee-saved: read_int must not alter the caller's frame pointer. The 'call read_int' instruction pushed an 8-byte return address; this push adds 8 more, restoring 16-byte alignment before 'call scanf' inside read_int. Both halves of the obligation — preserving rbp and maintaining alignment — are satisfied by this single push.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "40": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Copying rsp into rbp immediately after the prologue push anchors the frame pointer for the duration of this function call. Even though read_int has no local variables, this is the standard prologue pattern that debuggers depend on to reconstruct the call chain.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "41": {
+    "instruction": "xor     eax, eax",
+    "why": "scanf is a variadic function ('int scanf(const char *fmt, ...)'). The System V AMD64 ABI requires AL to hold the number of floating-point arguments passed in XMM registers before any variadic call. We pass none, so eax must be zero. 'xor eax, eax' encodes in 2 bytes; 'mov eax, 0' costs 5 bytes and produces the same machine state.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "51": {
+    "instruction": "push    rbp",
+    "why": "print_long calls printf, so it must be a proper ABI-compliant function that preserves rbp. The 'call print_long' instruction misaligned rsp by 8 (return address); this push restores 16-byte alignment before 'call printf' inside print_long. Without it, printf's internal SSE/AVX code may fault on a misaligned stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "53": {
+    "instruction": "xor     eax, eax",
+    "why": "printf must receive AL = 0 at every call site, independently. Stale values in eax from a previous instruction or from what printf itself returned (printf returns the character count in rax) must be zeroed afresh. There is no persistent 'remembered' zero from an earlier point in the program.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "65": {
+    "instruction": "push    rbp",
+    "why": "main is an ordinary callee from the C runtime's perspective. Pushing rbp saves the runtime's frame pointer and re-aligns the stack: the runtime's 'call main' pushed 8 bytes (return address), this push adds 8 more, giving 16 bytes total pushed since the last 16-byte boundary. All subsequent call instructions (printf, scanf, read_int, print_long) therefore see a correctly aligned stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "66": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Establishing rbp as the frame base lets every local-variable access use a fixed offset from rbp rather than a moving offset from rsp. After 'sub rsp, 528', rsp is 528 bytes below rbp, but [rbp - 8] (N) and [rbp - 16 - i*8] (array elements) remain stable references throughout the entire function.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "67": {
+    "instruction": "sub     rsp, 528",
+    "why": "We reserve space for N (8 bytes) plus up to 64 integers (512 bytes) on the stack. 520 bytes rounds up to 528 to stay on a 16-byte boundary: (return address 8) + (saved rbp 8) + (sub 528) = 544 = 34 * 16. If only 520 were subtracted, rsp would be at 8 mod 16, causing the next 'call' to violate the ABI alignment requirement.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "71": {
+    "instruction": "xor     eax, eax",
+    "why": "printf is called directly here (not through print_long), so the variadic float-count must be zeroed at this call site. This zeroing is separate from the one inside print_long — each call site bears its own responsibility. Relying on a previous 'xor eax, eax' elsewhere in the code is incorrect because any instruction in between could have modified eax.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "75": {
+    "instruction": "lea     rsi, [rbp - 8]",
+    "why": "scanf needs a pointer to write N into, not the current value at [rbp - 8] (which is uninitialized at this point). LEA computes the address rbp-8 and loads it into rsi without reading memory. Using 'mov rsi, [rbp - 8]' would pass uninitialized garbage as a pointer, causing scanf to write through a random address and almost certainly crash.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "78": {
+    "instruction": "mov     r12, [rbp - 8]",
+    "why": "r12 is callee-saved, so it survives every printf and scanf call inside the loops. Caching N here avoids reloading it from the stack on each loop iteration and on every comparison. The caller-saved registers rax, rdi, rsi, rdx etc. would all be overwritten by each function call, making them unsuitable as long-lived holders of N.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "81": {
+    "instruction": "xor     r13, r13",
+    "why": "'xor r13, r13' zeros the loop counter in 3 bytes (REX + opcode + ModRM) rather than the 6-7 bytes needed for 'mov r13, 0'. Modern CPUs also handle xor-self as a dependency-breaking idiom, allowing the renamed register to be allocated and ready before any instruction that would have produced r13's old value has even completed. r13 is callee-saved, so it will hold i intact across every printf and scanf call in the loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "89": {
+    "instruction": "inc     rsi",
+    "why": "r13 is the 0-based loop index, but we want to display 'Enter number 1:' through 'Enter number N:'. We copy r13 to rsi and then increment rsi before the printf call, converting to a 1-based display value. r13 itself is left unchanged so the array write on the next lines uses the correct 0-based offset.",
+    "doc_url": "https://www.felixcloutier.com/x86/inc"
+  },
+  "97": {
+    "instruction": "imul    rax, 8",
+    "why": "Each array element is a 64-bit (8-byte) integer, so the byte offset of element i is i * 8. The two-operand imul with an immediate computes this in place. An equivalent alternative is 'shl rax, 3' (left-shift by 3 bits = multiply by 8), which is one byte shorter, but imul with a literal 8 makes the stride factor explicit and avoids the mental translation from bit-shift to multiplication.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "98": {
+    "instruction": "sub     rsi, rax",
+    "why": "The stack grows downward, so elements at higher indices live at lower addresses. numbers[i] is at rbp - 16 - i*8. At this point rsi = rbp - 16 (the address of numbers[0]) and rax = i * 8 (the byte offset). Subtracting moves the pointer in the correct direction — downward in memory. Adding would point above numbers[0], into the N slot or the saved rbp.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "106": {
+    "instruction": "xor     r14, r14",
+    "why": "r14 will accumulate the running sum, starting at 0. Using 'xor r14, r14' rather than 'mov r14, 0' saves bytes and breaks the data dependency on the previous value of r14 in the CPU's out-of-order pipeline. r14 is callee-saved, which is the correct choice for an accumulator that must survive every 'call print_long' or 'call read_int' encountered later.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "107": {
+    "instruction": "xor     r13, r13",
+    "why": "The read loop left r13 = N (it incremented past the last index before the jge exit). We must reset r13 to 0 to restart from the beginning of the array for the sum loop. Reusing the callee-saved r13 for both loops is efficient, but requires explicit reinitialisation between them — forgetting this would make the sum loop start from index N and read zero elements.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "118": {
+    "instruction": "add     r14, [rcx]",
+    "why": "ADD with a memory source operand loads the 64-bit value at [rcx] (= &numbers[i]) and adds it to the accumulator r14 in a single instruction, without needing a separate MOV into a scratch register first. This direct memory-source form is legal for integer ALU operations on x86-64 and is typically the same speed as loading into a register and then adding.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "130": {
+    "instruction": "mov     rax, r14",
+    "why": "idiv requires its dividend in rdx:rax. r14 holds the sum, so we copy it to rax here as the first step before cqo and idiv. We cannot use r14 directly as the idiv dividend because idiv only accepts rax (implicitly), not an arbitrary register. After this instruction rax is the dividend and r14 is free to be clobbered by subsequent code (though it isn't).",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "131": {
+    "instruction": "cqo",
+    "why": "'cqo' fills rdx with copies of rax's sign bit, forming the correct signed 128-bit representation of the sum in rdx:rax. For a non-negative sum, rdx becomes 0; for a negative sum (if all inputs are negative), rdx becomes -1 (all ones). Skipping cqo leaves rdx with whatever value a previous instruction left there, making idiv divide a completely different 128-bit number.",
+    "doc_url": "https://www.felixcloutier.com/x86/cwd:cdq:cqo"
+  },
+  "132": {
+    "instruction": "idiv    r12",
+    "why": "idiv divides rdx:rax (the sign-extended sum) by r12 (= N), placing the quotient in rax and the remainder in rdx. The quotient is the integer average we want; the remainder (fractional part) is discarded, giving floor division. We use r12 as the divisor rather than reloading N from memory because r12 has held N since line 78 and is unaffected by all the function calls in between.",
+    "doc_url": "https://www.felixcloutier.com/x86/idiv"
+  },
+  "139": {
+    "instruction": "xor     eax, eax",
+    "why": "Sets main's exit code to 0 (success). At this point rax holds the quotient from idiv (the average), so we must explicitly zero it — unlike after a printf call, where rax holds the printf return value (character count) rather than the useful result. 'xor eax, eax' is the standard 2-byte idiom for zeroing rax to return success.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "140": {
+    "instruction": "leave",
+    "why": "'leave' is a single-byte equivalent of 'mov rsp, rbp' followed by 'pop rbp'. It collapses the 528-byte local frame back by restoring rsp to the frame base, then pops the saved rbp, leaving rsp pointing at the return address. Using 'add rsp, 528 / pop rbp' would achieve the same result but requires knowing the exact frame size — 'leave' derives it automatically from rbp.",
+    "doc_url": "https://www.felixcloutier.com/x86/leave"
+  }
+}

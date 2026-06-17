@@ -1,0 +1,72 @@
+{
+  "61": {
+    "instruction": "push rbp",
+    "why": "The System V AMD64 ABI classifies rbp as callee-saved: any function that uses it must leave it unchanged when it returns, because the caller may be using rbp as its own frame pointer. Saving the caller's rbp here on the stack fulfills that contract and simultaneously creates a linked list of frame pointers that debuggers walk to produce backtraces.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "62": {
+    "instruction": "mov  rbp, rsp",
+    "why": "rsp is a moving target — every push, pop, or call shifts it. Setting rbp equal to rsp here anchors a stable reference to this function's stack frame that does not move for the rest of the function. This makes it easy to compute fixed-offset addresses for locals ([rbp-8] etc.) and allows tools like gdb to display a meaningful call stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "64": {
+    "instruction": "popcnt rax, rdi",
+    "why": "POPCNT is a single hardware instruction (available since Intel Nehalem 2008) that counts all set bits in one operand in roughly 3 cycles. The software fallback shown in popcount_scalar below requires a loop that iterates once per set bit — up to 64 iterations — making POPCNT tens of times faster for dense values like 0xFFFFFFFFFFFFFFFF.",
+    "doc_url": "https://www.felixcloutier.com/x86/popcnt"
+  },
+  "83": {
+    "instruction": "xor  rax, rax",
+    "why": "XOR-ing a register with itself is the canonical x86 idiom to zero it. It encodes in 2 bytes versus 5 for 'mov rax, 0', and modern CPUs recognise it as a zero-idiom and eliminate the false read dependency on the previous value of rax, enabling earlier out-of-order scheduling.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "84": {
+    "instruction": "test rdi, rdi",
+    "why": "TEST performs a bitwise AND of both operands and sets flags without writing any result register. Using it here lets us check whether rdi is zero (ZF=1) without overwriting rdi itself, which must survive intact as the value we are about to count bits in.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "90": {
+    "instruction": "and  rdi, rcx",
+    "why": "This is Brian Kernighan's lowest-bit-clearing trick: n & (n-1) turns off exactly the lowest set bit of n. Subtracting 1 flips all bits below the lowest 1 and clears that lowest 1; ANDing with the original n then masks away those trailing 1s while leaving everything above unchanged. The loop therefore runs exactly once per set bit, making it O(popcount) rather than O(64), which is the practical reason to use this approach when POPCNT is unavailable.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "112": {
+    "instruction": "lzcnt rax, rdi",
+    "why": "LZCNT (requires the ABM/LZCNT feature flag, Haswell 2013+) counts the number of zero bits to the left of the most-significant 1 in a single instruction. Unlike BSR, LZCNT returns the operand-size (64) when the source is 0, so no special-case branch is needed for the all-zeros input, simplifying the code.",
+    "doc_url": "https://www.felixcloutier.com/x86/lzcnt"
+  },
+  "133": {
+    "instruction": "bsr  rax, rdi",
+    "why": "BSR (Bit Scan Reverse) scans from bit 63 downward and returns the index of the highest set bit into rax. That index is related to the leading-zero count by clz(x) = 63 - BSR(x) for non-zero x. BSR predates LZCNT and is available on all x86-64 CPUs, but its result is architecturally undefined when the source is 0, which is why the zero-check and branch on lines 130-131 are mandatory.",
+    "doc_url": "https://www.felixcloutier.com/x86/bsr"
+  },
+  "135": {
+    "instruction": "xor  rax, 63",
+    "why": "BSR returned the bit index of the highest set bit (0 = LSB, 63 = MSB), but we need the number of bits above it. That count is 63 minus the BSR result. XOR with 63 is arithmetically identical to subtraction from 63 for any value in 0-63, because 63 = 0b0111111 and flipping all six lower bits computes the two's-complement negation within that 6-bit field, saving a separate sub instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "141": {
+    "instruction": "mov  rax, 64",
+    "why": "BSR is architecturally undefined when its source is 0, so without this branch the function would return garbage for that input. By convention, clz(0) = 64 (the register width), because all 64 bits are leading zeros. The explicit branch to this label on line 131 ensures we never execute BSR when rdi is 0.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "157": {
+    "instruction": "tzcnt rax, rdi",
+    "why": "TZCNT (part of BMI1, Haswell 2013+) counts contiguous zero bits below the lowest set bit in one instruction, giving the trailing-zero count directly. Like LZCNT, it returns 64 for an input of 0, making it safer than the BSF fallback whose behavior is undefined on 0 and whose result would be meaningless.",
+    "doc_url": "https://www.felixcloutier.com/x86/tzcnt"
+  },
+  "177": {
+    "instruction": "bsf  rax, rdi",
+    "why": "BSF (Bit Scan Forward) scans from bit 0 upward and returns the index of the first 1 it finds. For a non-zero value, that index is exactly the count of trailing zeros, making BSF a direct ctz implementation on CPUs that predate TZCNT. Its result is undefined when the source is 0, so the zero-check on line 174 must execute before this instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/bsf"
+  },
+  "184": {
+    "instruction": "mov  rax, 64",
+    "why": "BSF produces an undefined result for a zero operand, so we branch here before BSF runs and return 64 as the conventional ctz(0) value (the register width). Without this guard, a caller passing 0 would receive whatever stale value rax happened to hold, which could silently produce wrong results that are hard to debug.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "429": {
+    "instruction": "xor  rdi, rdi",
+    "why": "Linux syscall 60 is exit(), and the kernel reads the exit code from rdi. XOR-ing rdi with itself sets it to 0 (EXIT_SUCCESS) in 3 bytes versus 7 bytes for 'mov rdi, 0'. The shell sees this as a successful exit when you run 'echo $?' after the program.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

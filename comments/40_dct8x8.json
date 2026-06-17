@@ -1,0 +1,77 @@
+{
+  "111": {
+    "instruction": "push rbp",
+    "why": "Saves the caller's frame pointer as required by the callee-save ABI contract. dct8_row is called from dct8x8, which is itself called from _start. Each level in the call chain depends on rbp being intact after the callee returns. The push also restores 16-byte stack alignment: the 'call dct8_row' instruction pushed an 8-byte return address (rsp now 8 mod 16), and this push of rbp brings rsp back to 0 mod 16 before the subsequent push sequence.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "112": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Anchors the stack frame at its current position. After the five subsequent push instructions, rsp will be 40 bytes lower, but rbp stays fixed, allowing a debugger to reconstruct the call chain. In a function with many nested calls like dct8_row (which loops 64 times calling inner arithmetic), a stable rbp is what makes 'gdb bt' produce a readable backtrace rather than gibberish.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "113": {
+    "instruction": "push rbx",
+    "why": "rbx is designated as the frequency-coefficient accumulator F[k]. The inner loop runs 8 times per outer iteration, and the outer loop runs 8 times, so rbx is live across up to 64 iterations. If rbx were caller-saved, a nested function call inside the loop would destroy the accumulated sum. Using a callee-saved register eliminates spill/reload noise and keeps the critical path in the inner loop free of memory traffic.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "114": {
+    "instruction": "push r12",
+    "why": "r12 holds the input pointer throughout all 64 iterations of the double loop. Because the computation is pure register arithmetic with no internal function calls, r12 could technically be any register — but choosing from the callee-saved set (r12-r15, rbx, rbp) is correct engineering practice: it makes dct8_row safe to call from any context without hidden aliasing with temporary scratch registers.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "136": {
+    "instruction": "movsx rax, word [r12 + r15*2]",
+    "why": "The input block stores int16_t values (pixels centered at 0 by subtracting 128, range roughly -128 to +127). MOVSX ('Move with Sign-Extension') widens the 16-bit two's-complement value to 64 bits while preserving its sign: a value like -30 stays -30 in rax rather than becoming 65506. Without sign extension, the product with the cosine coefficient would treat negative pixel values as large positive numbers, producing completely wrong DCT coefficients.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "138": {
+    "instruction": "movsx rdx, word [dct_cos + rcx*2]",
+    "why": "The Q13 cosine table contains signed 16-bit integers — cosine values range from positive to negative (e.g., row k=4 has entries +2896 and -2896). Loading with MOVSX preserves their sign when widened to 64 bits. If MOVZX were used instead, all negative cosine entries would become large positive numbers, turning the DCT butterfly arithmetic into nonsense. This is the key instruction that makes fixed-point signed multiplication correct.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "140": {
+    "instruction": "imul  rax, rdx",
+    "why": "This is the core multiply of the naive DCT: input_sample * cosine_coefficient. Both operands have been sign-extended to 64 bits, and the 64-bit two-operand IMUL writes the low 64 bits of the product into rax. Using 64-bit arithmetic here avoids overflow: an int16 value (~4000 max for cosine) times an int16 pixel (~128 max) gives at most ~512000, well within 32-bit range, but using 64-bit throughout is safe and avoids subtle bugs if constants are ever revised.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "148": {
+    "instruction": "sar  rbx, 13",
+    "why": "The cosine table is in Q13 fixed-point format (scale factor 2^13 = 8192). After accumulating 8 products of the form pixel * cos_q13, the sum is 8192× too large. SAR (Arithmetic Right Shift) by 13 divides by 8192, recovering the true DCT coefficient in integer units. SAR is used rather than SHR because the accumulator rbx can be negative (the DCT produces both positive and negative frequency coefficients), and SAR preserves the sign whereas SHR would produce a large positive number for negative inputs.",
+    "doc_url": "https://www.felixcloutier.com/x86/sal:sar:shl:shr"
+  },
+  "149": {
+    "instruction": "mov  [r13 + r14*4], ebx",
+    "why": "Only the low 32 bits of rbx are stored because the output array is declared as int32_t (4 bytes per element). Writing 'ebx' instead of 'rbx' implicitly stores only the lower half, which is the correct truncation: after a Q13 shift, DCT coefficients of an 8-pixel row of values in [-128, 127] fit comfortably in 32 bits. The stride r14*4 steps 4 bytes per coefficient, one slot per frequency index k.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "194": {
+    "instruction": "imul rax, rbx, 16",
+    "why": "x86 SIB addressing supports scales of only 1, 2, 4, or 8. To compute row * 16 (each input row is 8 int16 values = 16 bytes), we cannot write [r12 + rbx*16] — the assembler would reject it. IMUL with a 3-operand immediate computes the scaled offset into a separate register (rax), which is then added to the base in the subsequent LEA. This pattern — IMUL then LEA — appears throughout FFmpeg and other multimedia codecs for any stride that is not a power-of-2 up to 8.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "195": {
+    "instruction": "lea  rdi, [r12 + rax]",
+    "why": "LEA ('Load Effective Address') computes the address of the input row without reading memory. If MOV were used here, it would dereference the pointer and load 8 bytes of pixel data into rdi — which is not what we want; we want the pointer itself as the argument to dct8_row. LEA is also cheaper than an ADD on a separate copy of the base register because it uses the CPU's address-generation unit, which operates in parallel with the integer ALU.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "197": {
+    "instruction": "imul rax, rbx, 32",
+    "why": "Each output row holds 8 int32_t values = 32 bytes, so the output row pointer is base + row * 32. Again, 32 is not a valid SIB scale, so we precompute the offset with IMUL. The 3-operand form 'imul rax, rbx, 32' avoids clobbering rbx (the loop counter) — a 2-operand 'imul rbx, 32' would destroy the row index, requiring a reload.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "176": {
+    "instruction": "push rbp",
+    "why": "dct8x8 calls dct8_row eight times. The System V ABI promises that dct8_row will preserve rbp, but only if dct8x8 itself saves the *caller's* rbp first. Without this push, the frame pointer chain seen by a debugger during any of those eight calls would be broken, truncating backtraces. The push also corrects stack alignment from 8 mod 16 to 0 mod 16 before the three additional pushes inside dct8x8.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "200": {
+    "instruction": "call dct8_row",
+    "why": "By this point rdi and rsi have been loaded with the addresses of the current input and output rows computed via IMUL and LEA. CALL pushes the 8-byte return address and transfers control. Upon return, rbx, r12, r13 are guaranteed intact (callee-saved), so the row counter and block pointers survive the call. rax, rcx, rdx, rdi, rsi, and r8-r11 may be clobbered — none of those hold state we need after the call.",
+    "doc_url": "https://www.felixcloutier.com/x86/call"
+  },
+  "374": {
+    "instruction": "xor  rdi, rdi",
+    "why": "Sets the exit code to 0 (success) for the Linux exit() syscall. 'xor rdi, rdi' encodes in 3 bytes (REX + opcode + ModRM) vs 7 bytes for 'mov rdi, 0', and CPUs handle it as a dependency-breaking zero idiom: they can rename the output to a fresh physical register that is known to be zero without reading the previous value of rdi.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

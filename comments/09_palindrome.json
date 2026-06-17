@@ -1,0 +1,92 @@
+{
+  "42": {
+    "instruction": "push    rbp",
+    "why": "The System V AMD64 ABI designates rbp as a callee-saved register — any function that modifies it must restore it before returning. Pushing rbp onto the stack saves the caller's frame-pointer value so it can be restored later. This is also the first step of the standard prologue: paired with 'mov rbp, rsp' on the next line it locks the current stack top as this function's stable reference point for all local-variable accesses.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "43": {
+    "instruction": "mov     rbp, rsp",
+    "why": "After saving the caller's rbp, this captures the current stack pointer into rbp, establishing the frame pointer for this function. All local variables will be addressed as fixed negative offsets from rbp even though rsp may move further as more pushes or subs occur. Using rbp as a stable anchor makes debugging with GDB and LLDB straightforward because both debuggers walk the saved-rbp chain to unwind the stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "44": {
+    "instruction": "xor     eax, eax",
+    "why": "scanf is a variadic function. The System V AMD64 ABI requires AL to hold the count of floating-point arguments passed in XMM registers before any variadic call. We pass zero floats, so eax must be 0. 'xor eax, eax' is preferred over 'mov eax, 0': it encodes in 2 bytes instead of 5; writing to eax implicitly zeroes the upper 32 bits of rax; and CPUs treat it as a zero idiom with no false input dependency on the previous value of eax.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "54": {
+    "instruction": "xor     eax, eax",
+    "why": "Same ABI obligation as line 44, but before printf. Even though the format string contains '%ld' (an integer argument), no floating-point values are passed in XMM registers, so AL must be 0. Omitting this would cause printf to read a random AL value and potentially examine garbage XMM registers, potentially corrupting floating-point state or producing wrong output on certain libc implementations.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "66": {
+    "instruction": "test    rdi, rdi",
+    "why": "'test reg, reg' performs a bitwise AND of the register with itself and discards the result, setting SF and ZF based on the value without modifying the register. The subsequent 'js .negative' depends on SF, and 'jz .yes' depends on ZF. Compared to 'cmp rdi, 0', 'test rdi, rdi' is one byte shorter in the 64-bit encoding and signals intent more clearly — this is a sign and zero check, not a subtraction.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "67": {
+    "instruction": "js      .negative",
+    "why": "'js' (jump if sign) branches when SF=1, meaning the most-significant bit of the tested value is set, which in two's-complement means the value is negative. This is the idiomatic complement to 'test rdi, rdi': no separate 'cmp rdi, 0' is needed. If N is negative the digit-extraction loop would run on a negative number, and idiv would extract correct digits but the reversed number would not compare equal to the original — returning -1 via this branch lets the caller print a specialized message instead.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "72": {
+    "instruction": "mov     r8, rdi",
+    "why": "r8 through r11 are caller-saved in the System V ABI, but is_palindrome makes no calls itself, so r8 is safe here as a stable copy of the original N. rax is overwritten by idiv on every loop iteration and rdx by cqo, so neither can hold N across iterations. Keeping the original in r8 lets the final comparison at .compare check whether the reconstructed reversed number equals the input without re-reading a stack slot.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "73": {
+    "instruction": "xor     r9, r9",
+    "why": "r9 is the accumulator that builds the reversed number and must start at exactly 0. If r9 held a stale value, the first 'imul r9, r11' would multiply garbage by 10 instead of 0, producing a wildly wrong reversed number for even a single-digit input. 'xor r9, r9' is the canonical zero idiom — 3 bytes with no input dependency — preferable to 'mov r9, 0' which is 7 bytes in REX-encoded 64-bit form.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "82": {
+    "instruction": "cqo",
+    "why": "idiv divides the 128-bit value rdx:rax — rdx must hold the sign-extended upper half of the dividend before the division. cqo ('convert quadword to octword') fills rdx: if rax is negative rdx becomes 0xFFFFFFFFFFFFFFFF; otherwise rdx becomes 0. Without cqo, rdx holds whatever was left by the previous instruction, making idiv divide a wildly wrong 128-bit number and almost certainly triggering a divide-overflow (#DE) fault.",
+    "doc_url": "https://www.felixcloutier.com/x86/cwd:cdq:cqo"
+  },
+  "83": {
+    "instruction": "idiv    r11",
+    "why": "idiv divides rdx:rax by r11 (which holds 10), placing the quotient in rax and the remainder in rdx. The remainder rdx is the last decimal digit of the current value — exactly what we need to build the reversed number one digit at a time. A single division gives us both the stripped-down quotient (for the next iteration) and the extracted digit (for appending to reversed), making this more efficient than computing mod and div separately.",
+    "doc_url": "https://www.felixcloutier.com/x86/idiv"
+  },
+  "85": {
+    "instruction": "imul    r9, r11",
+    "why": "Before appending the new digit, the reversed accumulator must shift one decimal place to the left by multiplying by 10. Without this shift, each new digit would overwrite the ones place rather than extending the number. For example, if reversed=12 and the new digit is 3, the goal is 123 = 12*10+3, not 12+3=15. This is the standard algorithm for building an integer from its digits in reverse order.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "107": {
+    "instruction": "push    rbp",
+    "why": "main is a regular C function called by the runtime (crt0), which expects rbp to be callee-saved. This push saves the caller's frame pointer and contributes to the alignment calculation: (8 bytes for the return address already on stack) + (8 bytes for this push) + (16 bytes sub rsp below) = 32, a multiple of 16, keeping rsp correctly aligned before every call inside main.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "108": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Records the stack pointer immediately after the saved rbp as the frame base. The local variable — N at [rbp-8] — is addressed as a fixed negative offset from this value. Without this instruction there would be no stable rbp to compute [rbp-8] from, and the subsequent 'lea rsi, [rbp-8]' passed to scanf would point to a wrong or garbage address.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "109": {
+    "instruction": "sub     rsp, 16",
+    "why": "We need 8 bytes for the local variable N at [rbp-8], plus 8 bytes of padding. The padding is mandatory for alignment: after 'push rbp' (rsp -= 8) and 'sub rsp, 16' (rsp -= 16), the total displacement from the call-entry rsp is 24 bytes; adding the return address already on the stack (8 bytes) gives 32 bytes total, a multiple of 16, so rsp is 16-byte aligned before each call as the ABI requires.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "112": {
+    "instruction": "lea     rdi, [rel prompt]",
+    "why": "'lea' loads an effective address — it does not dereference memory. The 'rel' keyword tells the assembler to emit a RIP-relative encoding so the address is expressed as a displacement from the current instruction pointer. This is required for position-independent executables (PIE/ASLR): without 'rel', the assembler emits an absolute 64-bit address that the dynamic linker cannot relocate, causing a segfault or link error when ASLR is active.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "122": {
+    "instruction": "mov     r12, rdi",
+    "why": "r12 is callee-saved — any function called after this point (is_palindrome, print_result, printf) is required by the ABI to preserve it. Storing N in r12 before the call to is_palindrome means we can pass N to the print functions afterwards without re-reading the stack slot. rdi, by contrast, is caller-saved and will be overwritten by is_palindrome at its very first instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "150": {
+    "instruction": "xor     eax, eax",
+    "why": "The C runtime interprets main's return value as the process exit code, where 0 conventionally indicates success. 'xor eax, eax' zeroes rax in 2 bytes — equivalent to 'mov eax, 0' (5 bytes) — and writing eax automatically zero-extends to rax. It also sets eax before 'leave; ret' without disturbing any flags that might be examined by a profiling framework.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "151": {
+    "instruction": "leave",
+    "why": "'leave' is a single-byte shorthand for 'mov rsp, rbp' followed by 'pop rbp'. It restores rsp from 16 bytes below the frame base back to just above the saved rbp, then pops that saved rbp to restore the caller's frame pointer. Omitting leave would leave rsp pointing into the middle of the frame; the subsequent 'ret' would then pop the wrong value as the return address and jump to a garbage location, causing a segfault.",
+    "doc_url": "https://www.felixcloutier.com/x86/leave"
+  }
+}

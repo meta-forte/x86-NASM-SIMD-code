@@ -1,0 +1,77 @@
+{
+  "81": {
+    "instruction": "push rbp",
+    "why": "The System V AMD64 ABI requires every function that uses rbp to save the caller's copy on entry and restore it on exit. Pushing it here is the mandatory first step of any standard function prologue — without it, calling matmul_3x3_i32 from any other function would silently corrupt the caller's frame pointer.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "82": {
+    "instruction": "mov  rbp, rsp",
+    "why": "This establishes rbp as the frame pointer for this function's activation record. rsp moves whenever we push, pop, or call, but rbp stays fixed at this snapshot, giving a stable base address for local variables and the saved registers that follow. Debuggers and profilers traverse the chain of saved rbps to produce readable call stacks.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "83": {
+    "instruction": "push r12",
+    "why": "r12 through r15, rbx, and rbp are callee-saved in the System V ABI. We intend to use r12 as a long-lived pointer to matrix A throughout the triple nested loop, which survives many iterations and inner function calls (if any). Saving them here and restoring before ret is the contract that makes our function a safe guest: callers rely on these registers being unchanged after we return.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "113": {
+    "instruction": "imul rax, r8, 3",
+    "why": "The three-operand form of IMUL multiplies the second operand by the immediate third operand and writes the result into the first operand, leaving rdx completely untouched. The two-operand form (imul rax, r8) would require r8 to already equal 3, and 'imul rax' (one operand) would destroy rdx with the high half of a 128-bit product. The three-operand form is the idiomatic way to multiply by a small constant without clobbering rdx.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "115": {
+    "instruction": "movsxd rax, dword [r12 + rax*4]",
+    "why": "A[i][k] is stored as int32_t (4 bytes). The subsequent imul on line 122 works on 64-bit operands, so we must sign-extend the 32-bit value to 64 bits before multiplying. Without MOVSXD, the upper 32 bits of rax would contain garbage from the previous iteration, causing the multiply to produce a 64-bit product based on a wrong 64-bit multiplicand.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "118": {
+    "instruction": "imul rcx, r10, 3",
+    "why": "Same three-operand pattern as line 113, this time computing k*3 as the row-major offset into matrix B. Using the three-operand form keeps the computation self-contained in one instruction and avoids clobbering rdx, which would disrupt the rest of the loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "122": {
+    "instruction": "imul rax, rcx",
+    "why": "This is the two-operand signed multiply: rax = A[i][k] * B[k][j], both already sign-extended to 64 bits by the preceding MOVSXD loads. The 64-bit result fits in rax because the product of two int32 values always fits in 64 bits. The high half would only be needed if we had used the one-operand MUL/IMUL form, which produces rdx:rax.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "192": {
+    "instruction": "pxor xmm0, xmm0",
+    "why": "Before accumulating into xmm0, it must be set to exactly zero (identity element for addition). XOR-ing any register with itself achieves this in one instruction. PXOR is preferred over MOVAPS from a zeroed memory location because it does not need a memory operand and the CPU's zero-idiom recognition can eliminate the dependency on xmm0's previous value.",
+    "doc_url": "https://www.felixcloutier.com/x86/pxor"
+  },
+  "203": {
+    "instruction": "movss xmm1, [rdi + r8*4]",
+    "why": "MOVSS loads a single 32-bit float into the lowest lane (bits 31:0) of xmm1; the upper 96 bits are zeroed. We need this scalar value for broadcasting: before multiplying an entire row of B by the scalar A[i][k], we must first replicate that scalar into all four lanes of an XMM register. MOVSS is the appropriate load because MOVAPS would require a 16-byte-aligned, 4-float load.",
+    "doc_url": "https://www.felixcloutier.com/x86/movss"
+  },
+  "205": {
+    "instruction": "shufps xmm1, xmm1, 0",
+    "why": "SHUFPS with an 8-bit immediate selects which source lanes go into each destination lane. An immediate of 0 (binary 00_00_00_00) copies source lane 0 into all four destination lanes, broadcasting A[i][k] from the low lane of xmm1 to all four positions. This is the classic pre-AVX scalar-broadcast idiom: MOVSS to load, then SHUFPS 0 to replicate.",
+    "doc_url": "https://www.felixcloutier.com/x86/shufps"
+  },
+  "212": {
+    "instruction": "movaps xmm2, [rcx]",
+    "why": "MOVAPS (Move Aligned Packed Singles) loads 16 bytes (four float32 values) from a 16-byte-aligned address in one instruction. The 'align 16' directive on B4 in the data section guarantees the alignment requirement. Using MOVAPS instead of MOVDQU avoids a potential performance penalty on older CPUs for unaligned loads, and any alignment fault immediately reveals a programming error rather than silently running slower.",
+    "doc_url": "https://www.felixcloutier.com/x86/movaps"
+  },
+  "216": {
+    "instruction": "mulps  xmm1, xmm2",
+    "why": "MULPS multiplies four float32 pairs in parallel in a single instruction: xmm1[0]*xmm2[0], xmm1[1]*xmm2[1], xmm1[2]*xmm2[2], xmm1[3]*xmm2[3]. Because xmm1 holds A[i][k] broadcast into all four lanes, this simultaneously computes A[i][k]*B[k][0], A[i][k]*B[k][1], A[i][k]*B[k][2], A[i][k]*B[k][3] — one full scaled-row of the outer product.",
+    "doc_url": "https://www.felixcloutier.com/x86/mulps"
+  },
+  "218": {
+    "instruction": "addps  xmm0, xmm1",
+    "why": "ADDPS accumulates four products into xmm0 simultaneously. Over four iterations of the k loop, xmm0 collects the outer-product contributions for all four output values C[i][0..3] in parallel, reducing four sequential loops (one per output column) into a single four-wide vectorized accumulation.",
+    "doc_url": "https://www.felixcloutier.com/x86/addps"
+  },
+  "228": {
+    "instruction": "movaps [rdi], xmm0",
+    "why": "After the k loop, xmm0 holds the completed row i of C (four float32 values). MOVAPS writes all 16 bytes to memory in one instruction, requiring the destination address to be 16-byte aligned. The output buffer C4 was declared in .bss and the linker aligns .bss sections, satisfying that requirement.",
+    "doc_url": "https://www.felixcloutier.com/x86/movaps"
+  },
+  "318": {
+    "instruction": "cvttss2si edi, xmm0",
+    "why": "CVTTSS2SI converts the lowest-lane float in xmm0 to a signed 32-bit integer using truncation (rounding toward zero). Writing to edi automatically zero-extends into rdi, satisfying the ABI without an extra instruction. We use this here because the print_i32 helper expects an integer argument, and the floating-point display approximation is acceptable for showing that A×I=A produces the correct integer-valued floats.",
+    "doc_url": "https://www.felixcloutier.com/x86/cvttss2si"
+  }
+}

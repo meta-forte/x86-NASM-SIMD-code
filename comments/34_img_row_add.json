@@ -1,0 +1,77 @@
+{
+  "71": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved. The 'call' instruction pushed an 8-byte return address, leaving rsp at 8 mod 16; this push restores 16-byte stack alignment required before any further 'call'. If this function ever called a helper that used SSE aligned stack operations, a misaligned stack would cause a #GP fault. Even without nested calls, saving rbp is required by the ABI so the caller's frame pointer survives.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "72": {
+    "instruction": "mov  rbp, rsp",
+    "why": "This anchors the current stack frame: rbp becomes a fixed reference point for this activation record. A debugger can unwind the call stack by following the chain of saved rbp values. Here the function has no local variables and never moves rsp, but establishing the frame pointer is still conventional and keeps crash dumps readable.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "74": {
+    "instruction": "xor  r8, r8",
+    "why": "r8 is the pixel index, and it must start at zero. xor reg, reg is the preferred zeroing idiom: it is shorter than 'mov r8, 0' and modern CPUs treat it as dependency-breaking (the result is known to be zero regardless of r8's previous value). r8 is not callee-saved, so it does not need to be pushed first.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "80": {
+    "instruction": "movzx rax, byte [rdi + r8]",
+    "why": "Pixels are unsigned 8-bit values (0–255). Loading with 'mov al, [...]' would leave bits 8–63 of rax holding stale values from previous instructions. The subsequent 'add rax, r9' could then produce a wildly wrong sum. MOVZX (Move with Zero-Extension) guarantees the upper 56 bits are zero, so rax holds a clean 64-bit unsigned pixel value ready for arithmetic.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "82": {
+    "instruction": "add  rax, r9",
+    "why": "Two uint8_t values can sum to at most 510, which overflows an 8-bit result. By adding in 64-bit registers (after zero-extending both bytes), the sum is computed exactly without any intermediate truncation. The following compare-and-clamp then caps the result at 255 before storing it back as a byte. This is the scalar equivalent of what PADDUSB does automatically in hardware.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "83": {
+    "instruction": "cmp  rax, 255",
+    "why": "This test detects overflow of the pixel sum. Without it, storing the raw 16-bit-range sum back into a byte register would silently wrap around — 200 + 100 would store 44 instead of 255, turning a bright highlight into a dark artifact. The compare drives the conditional clamp on line 85, implementing saturation semantics in scalar code.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "85": {
+    "instruction": "mov  rax, 255",
+    "why": "If the sum exceeded 255, this unconditionally replaces it with 255 — the maximum representable uint8_t. This is the scalar implementation of saturating addition: instead of wrapping around (modular arithmetic), the result clamps to the type's maximum. For pixel blending, saturation is correct: adding two bright pixels should produce white (255), not a dark artifact.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "88": {
+    "instruction": "mov  [rdx + r8], al",
+    "why": "rax holds a value in [0, 255] after the clamp, but we only want to write one byte to the output buffer. Using 'al' (the low 8 bits of rax) stores exactly the pixel value without affecting adjacent bytes in the buffer. Writing 'rax' or 'eax' to memory here would overwrite 8 or 4 bytes, corrupting the next 3–7 pixels.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "115": {
+    "instruction": "mov  r8, rcx",
+    "why": "rcx carries the pixel count n as the 4th function argument (System V ABI: arg4 = rcx). We copy it to r8 before the shr instruction overwrites it with the block count (n / 16). We need the original n again in the tail loop to know when to stop. r8 is caller-saved but safe to use here since this is the first use in the function.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "116": {
+    "instruction": "shr  r8, 4",
+    "why": "Each SIMD iteration processes exactly 16 pixels at once. Dividing n by 16 via right-shift gives the number of full 16-byte blocks. This is a power-of-two divide, so the shift is exact and costs one cycle instead of the ~30 cycles a general 'div' would take. The remainder (n mod 16) is handled by the tail loop, which steps through the leftover pixels one at a time.",
+    "doc_url": "https://www.felixcloutier.com/x86/sal:sar:shl:shr"
+  },
+  "118": {
+    "instruction": "xor  r9, r9",
+    "why": "r9 tracks the current byte offset into the three buffers (row_a, row_b, and dst). It starts at zero and advances by 16 after each SIMD block. Initialising it with xor is the same canonical zeroing idiom used elsewhere: shorter encoding than 'mov r9, 0' and dependency-breaking on modern CPUs.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "124": {
+    "instruction": "movdqu xmm0, [rdi + r9]",
+    "why": "MOVDQU (Move Unaligned Double Quadword) loads 16 bytes regardless of the pointer's alignment. The alternative, MOVDQA, requires the address to be 16-byte aligned and raises a #GP fault otherwise. Using MOVDQU here means the caller does not need to guarantee that row_a starts on a 16-byte boundary, making the function more general. On modern microarchitectures the performance difference is negligible.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu"
+  },
+  "127": {
+    "instruction": "paddusb xmm0, xmm1",
+    "why": "PADDUSB (Packed Add Unsigned Bytes with Saturation) adds 16 pairs of bytes simultaneously and clamps each result at 255 in hardware. This replaces 16 separate scalar add+compare+clamp sequences with a single instruction — approximately a 16x throughput improvement. The 'US' in the mnemonic means Unsigned Saturation: results are clamped to [0, 255] rather than wrapping around, which is exactly the pixel-blending semantics we need.",
+    "doc_url": "https://www.felixcloutier.com/x86/paddusb"
+  },
+  "130": {
+    "instruction": "movdqu [rdx + r9], xmm0",
+    "why": "After computing 16 saturated pixel values in xmm0, we write all 16 at once with a single store. MOVDQU for the store mirrors the unaligned load: if the destination buffer is not 16-byte aligned, MOVDQA would fault. Keeping both the load and store as MOVDQU pairs guarantees correctness for any pointer alignment while preserving the 16x throughput advantage over scalar stores.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu"
+  },
+  "133": {
+    "instruction": "add  r9, 16",
+    "why": "Each iteration consumed 16 bytes from each input buffer and wrote 16 bytes to the output buffer, so the byte offset must advance by 16 before the next iteration. Advancing by 16 keeps the three pointers (rdi+r9, rsi+r9, rdx+r9) in sync with each other. Forgetting to advance would re-process the first 16 pixels on every iteration, never making progress.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "56": {
+    "instruction": "push rbp",
+    "why": "Saves the caller's frame pointer as required by the callee-save ABI. reverse_i64_array is called from _start, which in turn calls print_array and print_cstr. If reverse_i64_array skipped this save, the rbp chain would be broken and gdb backtraces would be unreliable. The push also restores 16-byte stack alignment (rsp was 8 mod 16 after the 'call' instruction) before any nested call this function might make.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "57": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Establishes the frame-base pointer. Although reverse_i64_array has no local variables allocated on the stack, the rbp anchor is important for two reasons: (1) debuggers and profilers follow the rbp chain to unwind call stacks, and (2) it is good defensive practice — if a local buffer were added in a later revision, the frame pointer would already be in place and the offsets would be correct.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "64": {
+    "instruction": "mov  r12, rdi",
+    "why": "Copies the array pointer from rdi (the first argument register) into r12, which is callee-saved. The function makes no calls itself, but using a callee-saved register is forward-compatible and documents intent: r12 will hold the left pointer for the entire swap loop. Keeping the pointer in a callee-saved register rather than rdi also avoids confusion about the argument register being in use long after the prologue.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "65": {
+    "instruction": "lea  r13, [rdi + rsi*8 - 8]",
+    "why": "Computes the address of the last element, arr[n-1], without accessing memory. The formula is base + (n-1)*8 = base + n*8 - 8. LEA uses the CPU's address-generation unit, which evaluates 'base + index*scale + displacement' in one cycle without a memory read — MOV would dereference the address and load the value stored there. The -8 displacement is encoded directly in the instruction, so no additional SUB is needed. This is a classic LEA trick for computing a scaled pointer offset in one instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "71": {
+    "instruction": "cmp  r12, r13",
+    "why": "Compares the left and right pointers by computing r12 - r13 and checking the result flags. When r12 >= r13 (pointers have met or crossed), the reversal is complete. Using pointer comparison rather than an index counter avoids a separate loop-bound variable; the two pointers converge naturally and the condition r12 >= r13 is the precise termination criterion for the two-pointer swap algorithm regardless of whether n is even or odd.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "75": {
+    "instruction": "mov  rax, [r12]",
+    "why": "Loads the 8-byte (64-bit) value at the left pointer into rax to serve as the temporary variable in the three-move swap. x86-64 has no single 'swap memory' instruction, so a three-register pattern (tmp = *left; *left = *right; *right = tmp) using rax as tmp is standard. rax is caller-saved, which is fine here because we make no calls inside the loop, and rax is not expected to be preserved across the function boundary anyway.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "80": {
+    "instruction": "add  r12, 8",
+    "why": "Advances the left pointer by one element (8 bytes for int64_t). Pointer arithmetic in assembly is always in bytes; there is no automatic scaling as in C 'ptr++'. The constant 8 must match the element size declared in .data (dq = define quadword = 8 bytes each). If this were an int32 array, the stride would be 4; for a byte array it would be 1. Getting the stride wrong would cause the pointers to land inside elements, producing silent data corruption.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "81": {
+    "instruction": "sub  r13, 8",
+    "why": "Moves the right pointer backward by one element (8 bytes). Decrementing by the element size is the two-pointer algorithm's right-side step; it mirrors the 'add r12, 8' on the left side. After each iteration the pointers move toward each other by two elements total. When they meet or cross, every pair has been swapped and the array is fully reversed.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "85": {
+    "instruction": "pop  rbp",
+    "why": "Restores the caller's frame pointer as the paired operation to 'push rbp' in the prologue. After this pop, rsp points exactly at the 8-byte return address that 'call reverse_i64_array' pushed. The subsequent 'ret' pops that address and transfers control back to _start. Any mismatch between pushes and pops (e.g., from a missed early-exit path) would misalign the stack and cause 'ret' to jump to garbage.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "104": {
+    "instruction": "test rdi, rdi",
+    "why": "Checks whether the integer in rdi is negative by testing the sign bit without modifying rdi. If the Sign Flag (SF) is set the number is negative, so we negate it and note that we need a '-' prefix. TEST avoids writing to any register — rdi still holds the input value and will be used in the negation if needed. 'cmp rdi, 0' is equivalent but one byte longer in the 64-bit register form.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "119": {
+    "instruction": "xor  rdx, rdx",
+    "why": "The DIV instruction interprets the dividend as rdx:rax (a 128-bit value). If rdx is not cleared before DIV, the stale value in rdx becomes the high 64 bits of the dividend, causing a completely wrong quotient or a #DE (divide exception) if the quotient does not fit in 64 bits. Zeroing rdx before each decimal-digit extraction is mandatory; forgetting this is one of the most common bugs in assembly number-printing routines.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "121": {
+    "instruction": "div  rcx",
+    "why": "Divides rdx:rax by rcx (10). The quotient goes into rax for the next iteration, and the remainder (0-9) goes into rdx — this is the least-significant decimal digit that was not yet extracted. Converting rdx to ASCII ('0'+dl) and storing it produces the digit string in reverse order (ones digit first, then tens, hundreds, etc.). The buffer is then reversed after all digits are extracted to produce the correct human-readable decimal representation.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "196": {
+    "instruction": "push r14",
+    "why": "r14 holds the array pointer across all iterations of print_array's loop. Each iteration calls print_i64 and potentially print_cstr — both are full function calls that may clobber rdi, rsi, rdx, rcx, rax, and r8-r11 (all caller-saved). Storing the array pointer in callee-saved r14 ensures it is intact after every nested call without requiring a stack spill and reload on every iteration.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "197": {
+    "instruction": "push r15",
+    "why": "r15 holds the element count throughout the print_array loop. For the same reason as r14: count must survive two function calls per iteration (print_i64 and print_cstr). Using r15 (callee-saved) rather than a stack slot keeps the hot loop free of extra load instructions and makes the loop body compact. r14 and r15 are the last two general-purpose callee-saved registers beyond r12 and r13, used when a function needs more than a single surviving pointer.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "209": {
+    "instruction": "mov  rdi, [r14 + rbx*8]",
+    "why": "Loads one 8-byte (int64_t) element from the array using scaled-index addressing. The SIB byte encodes base=r14, index=rbx, scale=8 — the CPU computes the effective address r14 + rbx*8 internally in the AGU and performs the load, all in one instruction. In C this would be written as arr[index]. The scale factor 8 must match the element width; using scale 4 would access int32_t pairs, returning garbage for a 64-bit array.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "37": {
+    "instruction": "push    rbp",
+    "why": "rbp is callee-saved: read_int must restore it before returning so the caller's frame pointer is intact. The 'call read_int' pushed an 8-byte return address; this push brings the total to 16 bytes, restoring 16-byte alignment before the 'call scanf' inside read_int.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "38": {
+    "instruction": "mov     rbp, rsp",
+    "why": "This records rsp's current position as the base of read_int's stack frame. Although read_int has no local variables, setting rbp is standard practice: it gives debuggers a stable reference to unwind the call stack, and it makes the prologue/epilogue symmetric so any future addition of locals is a one-line change.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "39": {
+    "instruction": "xor     eax, eax",
+    "why": "scanf is variadic, so the System V AMD64 ABI requires AL to hold the count of floating-point arguments in XMM registers before the call. We pass zero floats. 'xor eax, eax' encodes in 2 bytes versus 5 for 'mov eax, 0', and writing a 32-bit register implicitly zeroes the upper 32 bits of rax on x86-64.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "49": {
+    "instruction": "push    rbp",
+    "why": "print_result calls printf, which is allowed to clobber rbp if print_result did not save it first (since printf sees rbp as caller-saved from its perspective — but rbp is callee-saved, so print_result must protect the caller's rbp). This push also re-establishes alignment: the return address from 'call print_result' leaves rsp at 8 mod 16, and this push brings it back to 0 mod 16.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "51": {
+    "instruction": "xor     eax, eax",
+    "why": "Every call site for a variadic function needs its own 'xor eax, eax'. There is no way for the CPU or ABI to carry the zero forward from a previous call; eax may have been modified by printf itself or by code between calls. Skipping this before printf produces undefined behaviour on implementations that branch based on AL's value when deciding whether to scan XMM registers.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "61": {
+    "instruction": "push    rbp",
+    "why": "main is called by the C runtime with 'call main', which pushes an 8-byte return address. This push of rbp adds another 8 bytes, bringing the total pushed since entry to 16, satisfying the alignment requirement before subsequent calls. It also fulfils the callee-save obligation so the runtime's own rbp is undisturbed when we return.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "62": {
+    "instruction": "mov     rbp, rsp",
+    "why": "After the prologue push, rsp points to the saved rbp. Copying rsp into rbp now creates a stable frame pointer for addressing the local variable N as [rbp - 8] even after 'sub rsp, 16' moves rsp further down.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "63": {
+    "instruction": "sub     rsp, 16",
+    "why": "We need 8 bytes for the local variable N on the stack, but the ABI requires 16-byte alignment before any 'call'. At this point, 16 bytes have already been pushed (return address + saved rbp), so subtracting 16 more keeps rsp on a 16-byte boundary. Subtracting only 8 would leave rsp at 8 mod 16, which causes crashes in library functions that use aligned SSE loads internally.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "66": {
+    "instruction": "lea     rdi, [rel prompt]",
+    "why": "LEA loads the address of 'prompt' into rdi without dereferencing memory. The '[rel label]' form encodes this as a compact RIP-relative offset, allowing the binary to work correctly regardless of where the OS loads it. printf expects a pointer in rdi, not the first character of the string — LEA is the correct choice here because MOV would dereference and give us the bytes of the string itself.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "67": {
+    "instruction": "xor     eax, eax",
+    "why": "Here printf is called directly from main (without going through the print_result wrapper), so the variadic float-count zeroing must happen at this call site explicitly. The wrapper handles it internally for the print_result call, but this inline call to printf requires its own 'xor eax, eax'.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "72": {
+    "instruction": "lea     rsi, [rbp - 8]",
+    "why": "scanf writes the parsed integer through the pointer in rsi, so rsi must hold the address of the stack slot, not the value currently there. LEA computes rbp-8 as an address and puts it in rsi without touching memory. Using MOV here would load the uninitialized bytes from that stack slot and pass them as a pointer, almost certainly causing a segmentation fault when scanf writes through them.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "76": {
+    "instruction": "mov     rax, [rbp - 8]",
+    "why": "Now we want the value of N, not its address, so MOV with the memory operand '[rbp - 8]' dereferences the stack slot and loads the 64-bit integer into rax. This is the inverse of the LEA on line 72: LEA gave scanf somewhere to write, and MOV now reads what scanf wrote.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "77": {
+    "instruction": "imul    rax, rax",
+    "why": "The two-operand imul with both operands the same register squares the value: rax = rax * rax = N^2. The result is the lower 64 bits of the signed product, which is exact for any N whose square fits in 64 bits (roughly |N| <= 3 billion). Using the one-operand form 'imul rax' would compute rdx:rax = rax * rax and scatter the result across two registers, requiring extra work to reassemble — unnecessary when we only need the lower half.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "83": {
+    "instruction": "mov     rsi, [rbp - 8]",
+    "why": "printf needs to print N (the original input) as the first %ld. We load it from the stack slot here because rax was overwritten by the imul on line 77 (it now holds N^2). The stack slot at [rbp - 8] still holds the unchanged value scanf wrote, making it the reliable place to re-read N.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "84": {
+    "instruction": "mov     rdx, rax",
+    "why": "The System V ABI passes integer arguments in rdi, rsi, rdx, rcx, r8, r9 in order. printf receives: rdi = format string, rsi = N (just loaded), rdx = N^2 (currently in rax from the imul). Moving rax to rdx places N^2 into the third argument slot so printf matches it to the second %ld in the format string.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "87": {
+    "instruction": "xor     eax, eax",
+    "why": "main must return 0 to signal success to the OS. Zeroing eax here serves as the return value, not the variadic float count (printf was already called above). The convention is the same instruction for two different purposes — context determines the meaning: before a variadic call it is the float count; at the end of main it is the exit code.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "88": {
+    "instruction": "leave",
+    "why": "'leave' executes 'mov rsp, rbp' then 'pop rbp' atomically in one byte. It restores rsp to the frame base (discarding the local variable N) and reinstates the caller's rbp. After leave, rsp points at the return address pushed by 'call main', and 'ret' pops it to transfer control back to the C runtime.",
+    "doc_url": "https://www.felixcloutier.com/x86/leave"
+  }
+}

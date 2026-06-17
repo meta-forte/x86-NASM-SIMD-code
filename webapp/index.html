@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>x86 NASM Assembly Explorer</title>
+  <style>
+    /* ── Reset / base ──────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #f6f8fa;
+      color: #1f2328;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ────────────────────────────────────────────────── */
+    header {
+      padding: 12px 20px;
+      background: #ffffff;
+      border-bottom: 1px solid #d0d7de;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; color: #0969da; }
+    #file-select {
+      padding: 6px 10px;
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      color: #1f2328;
+      font-size: 0.85rem;
+      min-width: 260px;
+      cursor: pointer;
+    }
+    #file-select:focus { outline: 2px solid #0969da; }
+
+    /* ── Main layout ───────────────────────────────────────────── */
+    main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── File list sidebar ─────────────────────────────────────── */
+    #file-list {
+      width: 220px;
+      background: #f6f8fa;
+      border-right: 1px solid #d0d7de;
+      overflow-y: auto;
+      flex-shrink: 0;
+      padding: 8px 0;
+    }
+    #file-list .section-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: #6e7781;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 8px 12px 4px;
+    }
+    #file-list a {
+      display: block;
+      padding: 5px 12px;
+      font-size: 0.8rem;
+      color: #57606a;
+      text-decoration: none;
+      border-left: 3px solid transparent;
+      transition: background 0.1s, border-color 0.1s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #file-list a:hover { background: #eaf0f7; }
+    #file-list a.active { border-left-color: #0969da; color: #0969da; background: #dbeafe; }
+
+    /* ── Code pane ─────────────────────────────────────────────── */
+    #code-pane {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0;
+      background: #ffffff;
+    }
+    #code-pane pre {
+      margin: 0;
+      padding: 16px 0;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.82rem;
+      line-height: 1.6;
+      tab-size: 4;
+    }
+    .code-line {
+      display: flex;
+      align-items: flex-start;
+      padding: 0 16px;
+      cursor: pointer;
+      transition: background 0.08s;
+    }
+    .code-line:hover  { background: #f0f6ff; }
+    .code-line.active { background: #dbeafe; }
+    .line-num {
+      min-width: 44px;
+      color: #8c959f;
+      user-select: none;
+      text-align: right;
+      padding-right: 16px;
+      flex-shrink: 0;
+    }
+    .line-body { color: #1f2328; white-space: pre; }
+
+    /* Syntax colouring — applied via JS */
+    .tok-comment  { color: #6e7781; font-style: italic; }
+    .tok-section  { color: #953800; font-weight: 600; }
+    .tok-label    { color: #0550ae; }
+    .tok-instr    { color: #cf222e; }
+    .tok-register { color: #8250df; }
+    .tok-number   { color: #0550ae; }
+    .tok-string   { color: #0a3069; }
+    .tok-directive{ color: #953800; }
+
+    /* ── Annotation sidebar ────────────────────────────────────── */
+    #annotation-pane {
+      width: 320px;
+      background: #f6f8fa;
+      border-left: 1px solid #d0d7de;
+      overflow-y: auto;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    #annotation-header {
+      padding: 12px 14px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #6e7781;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid #d0d7de;
+    }
+    #annotation-body {
+      padding: 14px;
+      flex: 1;
+      font-size: 0.82rem;
+      line-height: 1.6;
+      color: #1f2328;
+    }
+    #annotation-body .ann-line-num {
+      font-size: 0.7rem;
+      color: #6e7781;
+      margin-bottom: 6px;
+    }
+    #annotation-body .ann-instruction {
+      font-family: monospace;
+      color: #cf222e;
+      font-size: 0.9rem;
+      margin-bottom: 8px;
+    }
+    #annotation-body .ann-plain {
+      margin-bottom: 8px;
+    }
+    #annotation-body .ann-detail {
+      font-size: 0.78rem;
+      color: #57606a;
+      border-left: 2px solid #d0d7de;
+      padding-left: 8px;
+      margin-top: 6px;
+    }
+    #annotation-body .ann-link {
+      display: inline-block;
+      margin-top: 10px;
+      font-size: 0.75rem;
+      color: #0969da;
+      text-decoration: none;
+    }
+    #annotation-body .ann-link:hover { text-decoration: underline; }
+    #annotation-body .placeholder {
+      color: #8c959f;
+      font-style: italic;
+    }
+    #annotation-body code {
+      background: #eaeef2;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚙ x86 NASM Explorer</h1>
+  <select id="file-select"><option value="">— choose a file —</option></select>
+</header>
+
+<main>
+  <!-- Left: file list -->
+  <nav id="file-list"></nav>
+
+  <!-- Centre: source code -->
+  <section id="code-pane">
+    <pre id="code-pre"><span style="color:#8c959f;padding:16px;display:block">Select a file from the left panel.</span></pre>
+  </section>
+
+  <!-- Right: annotation -->
+  <aside id="annotation-pane">
+    <div id="annotation-header">Annotation</div>
+    <div id="annotation-body">
+      <p class="placeholder">Click any line to see its explanation here.</p>
+    </div>
+  </aside>
+</main>
+
+<script>
+// ── Configuration ─────────────────────────────────────────────────────────────
+// Set ASM_DIR to the path from which .asm files will be fetched.
+// When served via a local HTTP server from the repo root, '../src' works.
+const ASM_DIR      = '../src';
+const COMMENTS_DIR = '../comments';
+
+// ── File list ─────────────────────────────────────────────────────────────────
+// Files are listed explicitly because browsers cannot list directories.
+// Add new files here as you create them.
+const FILES = [
+  { label: '01 · Hello World & I/O', files: [
+    '01_hello_world.asm', '02_hello_args.asm', '03_mult_table.asm',
+    '04_square.asm',      '05_fibonacci.asm',
+  ]},
+  { label: '02 · Arithmetic', files: [
+    '06_hcf.asm',         '07_lcm.asm',        '08_array_average.asm',
+    '09_palindrome.asm',  '10_base_convert.asm',
+  ]},
+  { label: '03 · Strings & Memory', files: [
+    '11_arith_lib.asm',       '12_string_utils.asm',    '13_reverse_string.asm',
+    '14_reverse_array.asm',   '15_extract_substr.asm',  '16_reverse_utf8.asm',
+    '17_substring_search.asm',
+  ]},
+  { label: '04 · Sorting & Algorithms', files: [
+    '18_bubble_sort.asm',   '19_selection_sort.asm', '20_quick_sort.asm',
+    '21_word_freq.asm',     '22_rotate_array.asm',   '23_minmax.asm',
+    '24_prefix_sum.asm',    '25_fast_div.asm',
+  ]},
+  { label: '05 · Bit Manipulation', files: [
+    '26_bitcount.asm', '27_bittwiddle.asm',
+  ]},
+  { label: '06 · Matrices', files: [
+    '28_matrix_3x3.asm', '29_transpose.asm',
+    '30_matrix_nxn.asm', '31_matrix_mul.asm',
+  ]},
+  { label: '07 · SIMD Basics', files: [
+    '32_array_sum.asm',   '33_dot_product.asm', '34_img_row_add.asm',
+    '35_fast_memcpy.asm', '36_endian_swap.asm', '37_conv1d.asm',
+  ]},
+  { label: '08 · Image & Signal Processing', files: [
+    '38_yuv2rgb.asm', '39_sad_motion.asm',
+    '40_dct8x8.asm',  '41_sad_kernel.asm',
+  ]},
+];
+
+// ── Build sidebar & select ───────────────────────────────────────────────────
+const fileListEl   = document.getElementById('file-list');
+const fileSelectEl = document.getElementById('file-select');
+const allFiles     = [];
+
+FILES.forEach(group => {
+  // sidebar label
+  const lbl = document.createElement('div');
+  lbl.className = 'section-label';
+  lbl.textContent = group.label;
+  fileListEl.appendChild(lbl);
+
+  // select optgroup
+  const og = document.createElement('optgroup');
+  og.label = group.label;
+
+  group.files.forEach(fname => {
+    allFiles.push(fname);
+
+    // sidebar link
+    const a = document.createElement('a');
+    a.href = '#';
+    a.textContent = fname;
+    a.dataset.file = fname;
+    a.addEventListener('click', e => { e.preventDefault(); loadFile(fname); });
+    fileListEl.appendChild(a);
+
+    // select option
+    const opt = document.createElement('option');
+    opt.value = fname;
+    opt.textContent = fname;
+    og.appendChild(opt);
+  });
+
+  fileSelectEl.appendChild(og);
+});
+
+fileSelectEl.addEventListener('change', e => {
+  if (e.target.value) loadFile(e.target.value);
+});
+
+// ── Simple x86-64 / NASM syntax highlighter ──────────────────────────────────
+const REGISTERS = new Set([
+  'rax','rbx','rcx','rdx','rsi','rdi','rsp','rbp',
+  'r8','r9','r10','r11','r12','r13','r14','r15',
+  'eax','ebx','ecx','edx','esi','edi','esp','ebp',
+  'r8d','r9d','r10d','r11d','r12d','r13d','r14d','r15d',
+  'ax','bx','cx','dx','si','di','sp','bp',
+  'al','bl','cl','dl','sil','dil','spl','bpl',
+  'ah','bh','ch','dh',
+  'xmm0','xmm1','xmm2','xmm3','xmm4','xmm5','xmm6','xmm7',
+  'xmm8','xmm9','xmm10','xmm11','xmm12','xmm13','xmm14','xmm15',
+  'ymm0','ymm1','ymm2','ymm3','ymm4','ymm5','ymm6','ymm7',
+  'ymm8','ymm9','ymm10','ymm11','ymm12','ymm13','ymm14','ymm15',
+]);
+
+const DIRECTIVES = new Set([
+  'db','dw','dd','dq','resb','resw','resd','resq',
+  'equ','global','extern','section','bits','default',
+  'align','times','incbin','%define','%macro','%endmacro',
+]);
+
+function highlightLine(raw) {
+  // Comments (everything from ; onwards)
+  const commentIdx = raw.indexOf(';');
+  let code = commentIdx >= 0 ? raw.slice(0, commentIdx) : raw;
+  const commentPart = commentIdx >= 0 ? raw.slice(commentIdx) : '';
+
+  // Escape HTML in both parts
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  // Tokenise the code portion
+  let result = '';
+  // Section directives
+  if (/^\s*section\s/i.test(code)) {
+    result = `<span class="tok-section">${esc(code)}</span>`;
+  } else {
+    // Split into tokens
+    const tokens = code.split(/(\s+|,|\[|\]|\+|\-|\*|:|"[^"]*"|'[^']*')/);
+    tokens.forEach(tok => {
+      const lower = tok.toLowerCase().trim();
+      if (!tok) return;
+      if (/^"[^"]*"$/.test(tok) || /^'[^']*'$/.test(tok)) {
+        result += `<span class="tok-string">${esc(tok)}</span>`;
+      } else if (REGISTERS.has(lower)) {
+        result += `<span class="tok-register">${esc(tok)}</span>`;
+      } else if (DIRECTIVES.has(lower)) {
+        result += `<span class="tok-directive">${esc(tok)}</span>`;
+      } else if (/^(0x[0-9a-fA-F]+|-?\d+)$/.test(tok)) {
+        result += `<span class="tok-number">${esc(tok)}</span>`;
+      } else if (/^[a-zA-Z_\.][a-zA-Z0-9_\.]*:$/.test(tok)) {
+        result += `<span class="tok-label">${esc(tok)}</span>`;
+      } else if (/^[a-zA-Z][a-zA-Z0-9_]*$/.test(tok) && code.trimStart().startsWith(tok)) {
+        // First real word on a code line is likely an instruction
+        result += `<span class="tok-instr">${esc(tok)}</span>`;
+      } else {
+        result += esc(tok);
+      }
+    });
+  }
+
+  const commentHtml = commentPart
+    ? `<span class="tok-comment">${esc(commentPart)}</span>` : '';
+
+  return result + commentHtml;
+}
+
+// ── Load and render a source file ─────────────────────────────────────────────
+let currentComments = {};   // line-number (1-based string key) → annotation object
+let currentFile = '';
+
+async function loadFile(fname) {
+  currentFile = fname;
+  currentComments = {};
+
+  // Highlight active file in sidebar
+  document.querySelectorAll('#file-list a').forEach(a => {
+    a.classList.toggle('active', a.dataset.file === fname);
+  });
+  fileSelectEl.value = fname;
+
+  // Reset annotation panel
+  showAnnotation(null, null);
+
+  // Fetch source
+  let source = '';
+  try {
+    const r = await fetch(`${ASM_DIR}/${fname}`);
+    if (!r.ok) throw new Error(r.statusText);
+    source = await r.text();
+  } catch (e) {
+    document.getElementById('code-pre').innerHTML =
+      `<span style="color:#f85149;padding:16px;display:block">Could not load ${fname}: ${e.message}</span>`;
+    return;
+  }
+
+  // Fetch comments sidecar (optional — don't fail if absent)
+  try {
+    const r = await fetch(`${COMMENTS_DIR}/${fname.replace('.asm', '.json')}`);
+    if (r.ok) currentComments = await r.json();
+  } catch (_) { /* no comments file — that's fine */ }
+
+  // Render lines
+  const lines = source.split('\n');
+  const pre = document.getElementById('code-pre');
+  pre.innerHTML = '';
+
+  lines.forEach((raw, idx) => {
+    const lineNum = idx + 1;
+    const div = document.createElement('div');
+    div.className = 'code-line';
+    div.dataset.line = lineNum;
+
+    const numSpan = document.createElement('span');
+    numSpan.className = 'line-num';
+    numSpan.textContent = lineNum;
+
+    const bodySpan = document.createElement('span');
+    bodySpan.className = 'line-body';
+    bodySpan.innerHTML = highlightLine(raw) || ' '; // keep empty lines clickable
+
+    div.appendChild(numSpan);
+    div.appendChild(bodySpan);
+
+    div.addEventListener('click', () => {
+      document.querySelectorAll('.code-line.active')
+              .forEach(el => el.classList.remove('active'));
+      div.classList.add('active');
+      showAnnotation(lineNum, raw);
+    });
+
+    pre.appendChild(div);
+  });
+}
+
+// ── Show annotation for a clicked line ───────────────────────────────────────
+function showAnnotation(lineNum, rawLine) {
+  const body = document.getElementById('annotation-body');
+  if (!lineNum) {
+    body.innerHTML = '<p class="placeholder">Click any line to see its explanation here.</p>';
+    return;
+  }
+
+  const ann = currentComments[String(lineNum)] || {};
+  const commentMatch = rawLine && rawLine.match(/;\s*(.*)/);
+  const inlineComment = commentMatch ? commentMatch[1].trim() : '';
+
+  let html = `<div class="ann-line-num">Line ${lineNum} — ${currentFile}</div>`;
+
+  if (ann.instruction) {
+    html += `<div class="ann-instruction">${esc(ann.instruction)}</div>`;
+  }
+
+  // "why" field: the main explanation — shown prominently
+  if (ann.why) {
+    html += `<div class="ann-plain">${esc(ann.why)}</div>`;
+  } else if (ann.plain) {
+    // legacy field kept for backwards compat
+    html += `<div class="ann-plain">${esc(ann.plain)}</div>`;
+  } else if (inlineComment) {
+    // Fallback: show the inline comment from the source as a hint
+    html += `<div class="ann-plain" style="color:#8b949e;font-style:italic">${esc(inlineComment)}</div>`;
+  } else {
+    const code = rawLine.trim();
+    if (code) {
+      html += `<div class="ann-plain"><code>${esc(code)}</code></div>`;
+    } else {
+      html += `<div class="ann-plain" style="color:#484f58">(blank line)</div>`;
+    }
+  }
+
+  if (ann.detail) {
+    html += `<div class="ann-detail">${esc(ann.detail)}</div>`;
+  }
+
+  if (ann.doc_url) {
+    html += `<a class="ann-link" href="${ann.doc_url}" target="_blank" rel="noopener">
+               📖 Intel/NASM documentation ↗
+             </a>`;
+  } else {
+    // Auto-link only for *indented* lines — instructions are always indented in
+    // our style; labels, section directives, and global/extern start at column 0.
+    const isIndented = /^\s+\S/.test(rawLine);
+    if (isIndented) {
+      const instrMatch = rawLine.trimStart().match(/^([a-zA-Z][a-zA-Z0-9_]*)/);
+      if (instrMatch) {
+        const instr = instrMatch[1].toLowerCase();
+        // Skip NASM pseudo-ops / data declarations — not real CPU instructions
+        const NASM_ONLY = new Set([
+          'db','dw','dd','dq','resb','resw','resd','resq','equ','times','incbin',
+        ]);
+        const skip = NASM_ONLY.has(instr);
+        if (!skip) {
+          const docUrl = `https://www.felixcloutier.com/x86/${instr}`;
+          html += `<a class="ann-link" href="${docUrl}" target="_blank" rel="noopener">
+                     📖 felixcloutier.com/x86/${instr} ↗
+                   </a>`;
+        } else {
+          html += `<a class="ann-link" href="https://www.felixcloutier.com/x86/" target="_blank" rel="noopener">
+                     📖 felixcloutier.com/x86 — instruction index ↗
+                   </a>`;
+        }
+      }
+    }
+  }
+
+  body.innerHTML = html;
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,97 @@
+{
+  "64": {
+    "instruction": "push rbp",
+    "why": "Saves the caller's frame pointer as required by the System V AMD64 callee-save ABI. Every function call pushes an 8-byte return address onto the stack, leaving rsp 8-byte aligned; this push restores 16-byte alignment before any nested calls. Without saving rbp here, the subsequent 'mov rbp, rsp' would overwrite the caller's frame pointer and break debugger stack-unwind chains.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "65": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Snapping rbp to the current stack pointer creates a stable frame base for this activation record. rsp moves with every push/pop/call/ret, but rbp stays fixed, giving debuggers and profilers a reliable anchor to walk the call chain. Some leaf functions omit the frame pointer and use rsp-relative addressing, but any function that calls others should keep rbp for debuggability.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "85": {
+    "instruction": "push r12",
+    "why": "r12, r13, r14, r15, and rbx are all callee-saved under the System V ABI, meaning this function is free to use them but must restore them before returning. They are chosen here over caller-saved registers (rdi, rsi, rcx, rdx, r8-r11) because the nested calls to str_len_local would silently overwrite those. Parking the haystack pointer in r12 means it survives every call without explicit save/restore around each one.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "89": {
+    "instruction": "push rbx",
+    "why": "rbx is callee-saved and is chosen as the outer loop counter i because it persists across every inner comparison loop and every call to str_len_local. A caller-saved register such as rcx would be overwritten by str_len_local (which uses rcx as its own counter), forcing a stack spill-and-reload around every call.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "109": {
+    "instruction": "xor  rbx, rbx",
+    "why": "XORing a register with itself is the idiomatic zero-idiom in x86-64. The assembler emits the 32-bit form 'xor ebx, ebx' (2 bytes vs 7 for 'mov rbx, 0'), and the CPU automatically zero-extends the 32-bit result into the full 64-bit rbx. It also sets ZF=1 in EFLAGS, which is occasionally useful immediately after the zero. Here it initialises the outer loop index i=0 before the naive search begins.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "113": {
+    "instruction": "lea  rax, [rbx + r15]",
+    "why": "LEA (Load Effective Address) computes rbx+r15 (i+m) as pure integer arithmetic without touching memory or flags. It is used here to check the boundary condition i+m <= n before starting an inner comparison. Using lea instead of 'add rax, r15' after a 'mov rax, rbx' preserves any flags that may be live from a previous cmp, and avoids a temporary register.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "118": {
+    "instruction": "xor  rcx, rcx",
+    "why": "Resets the inner-loop character index j to zero at the start of each new alignment attempt. rcx is caller-saved and may hold any value left over from the previous iteration or from the str_len_local calls; the explicit xor guarantees j starts clean for every candidate starting position i.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "124": {
+    "instruction": "lea  rax, [rbx + rcx]",
+    "why": "i+j is the byte offset into the haystack for the current character comparison. LEA computes the sum as an address expression without dereferencing memory — the actual byte load happens on the next line using rax as a displacement from the haystack base pointer r12. This keeps the addressing clean and avoids a separate add before the memory operand.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "148": {
+    "instruction": "pop  rbx",
+    "why": "The stack is strictly LIFO, so registers must be popped in the exact reverse of their push order. rbx was the last register pushed in the prologue (lines 85-89), so it must be the first popped in the epilogue. Reversing the order incorrectly — even by one slot — silently installs wrong values into registers and can corrupt the saved return address, causing a crash on ret.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "153": {
+    "instruction": "pop  rbp",
+    "why": "Restores the caller's frame pointer saved at the function entry. After this pop, rsp points exactly at the 8-byte return address that 'call strstr_naive' deposited. The ret on the next line pops that address and transfers control back to the call site. Any push/pop imbalance between prologue and epilogue would make ret jump to garbage.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "178": {
+    "instruction": "mov  qword [r14], 0",
+    "why": "fail[0] is always 0 by definition: a single character has no proper prefix that is also a suffix. This explicit store is the base case that the iterative table-building loop (starting at i=1) relies on — when the fallback chain eventually reaches k=0, it looks up fail[0]=0 to determine there is no further prefix to fall back to. Without this initialisation the entry would hold BSS garbage and the fallback could run off the end of the table.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "197": {
+    "instruction": "lea  rax, [rcx - 1]",
+    "why": "k-1 is the index needed to look up the previous failure value when a mismatch occurs and k>0. LEA computes the subtraction into a scratch register without modifying rcx, which must retain the current k for the subsequent table load and potential retry. Using 'dec rcx' would permanently alter k before the lookup, breaking the retry logic.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "198": {
+    "instruction": "mov  rcx, [r14 + rax*8]",
+    "why": "This implements the KMP failure-function fallback: when pattern[i] mismatches pattern[k] and k>0, k jumps to fail[k-1] and the comparison retries at position i without advancing i. The *8 scale converts the int64_t array index (rax = k-1) to a byte offset. This is the heart of KMP's O(n+m) guarantee — it reuses the longest border already matched instead of restarting from position 0.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "249": {
+    "instruction": "mov  rdx, fail_table",
+    "why": "Writing a static label without brackets places its address (like '&fail_table' in C) into rdx rather than loading the value stored there. rdx is the third argument register in the System V calling convention, so this passes the pointer to the BSS output buffer as the third parameter of build_kmp_table. The function will write 8-byte entries into that array during table construction.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "265": {
+    "instruction": "test rcx, rcx",
+    "why": "When haystack[i] mismatches pattern[j], KMP normally falls back to fail[j-1]. But if j is already 0 there is no prefix to fall back to — this haystack character simply cannot extend any partial match. This test guards against an invalid fail[-1] lookup and forces i to advance instead, which is the only correct action at the start of the pattern.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "269": {
+    "instruction": "lea  rax, [rcx - 1]",
+    "why": "j-1 is the index into the failure table for the fallback step. LEA computes it into a scratch register without touching rcx (j), which the main search loop will re-read as the updated j after the jmp. If rcx were decremented directly here, the fallback value would be loaded with the wrong index on every mismatch.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "270": {
+    "instruction": "mov  rcx, [fail_table + rax*8]",
+    "why": "Loads fail[j-1] — the length of the longest proper border of pattern[0..j-1]. Setting j to this value means the next iteration compares the current haystack character (i does not move) against pattern[fail[j-1]]. This is the maximum position in the pattern from which a match could still succeed, exploiting the prefix work already done. The *8 scale factor converts the element index to a byte offset for the int64_t array.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "281": {
+    "instruction": "cmp  rcx, r15",
+    "why": "rcx holds j (pattern characters matched so far) and r15 holds m (pattern length). When j == m every character of the pattern has matched consecutively, so this single comparison is the complete-match detector. The match start is then recovered as i-m without having needed a separate 'match_start' variable throughout the search loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "286": {
+    "instruction": "sub  rax, r15",
+    "why": "After a full match, rbx (copied into rax) holds the haystack index one past the last matched character. Subtracting the pattern length m recovers the 0-based start index of the match. Tracking only the end position and computing the start on exit is simpler than maintaining a separate 'start' variable inside the search loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  }
+}

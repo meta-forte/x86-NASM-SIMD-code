@@ -1,0 +1,102 @@
+{
+  "57": {
+    "instruction": "push rbp",
+    "why": "Saves the caller's frame pointer as required by the callee-save ABI. u64_to_dec is called from _start, which also calls i64_to_dec and print_cstr; without this save the 'mov rbp, rsp' below would overwrite the caller's frame pointer. The push also restores 16-byte stack alignment after the call instruction pushed an 8-byte return address.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "58": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Establishes the frame base pointer for u64_to_dec. rbx and r12 will be pushed next, moving rsp, but rbp remains fixed so that pop rbp at the end of the function reliably restores the caller's saved value regardless of how many registers were pushed.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "59": {
+    "instruction": "push rbx",
+    "why": "rbx is callee-saved and is used throughout u64_to_dec as the moving write pointer into the digit buffer. The function makes no nested calls, but the ABI still requires callee-saved registers to be preserved. Using rbx (rather than a caller-saved register) means the digit pointer stays valid even if the code is later extended to call a helper.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "74": {
+    "instruction": "xor  rdx, rdx",
+    "why": "The unsigned DIV instruction treats rdx:rax as a 128-bit dividend — rdx supplies the high 64 bits. If rdx holds any nonzero value from a previous instruction, the dividend is effectively a number up to 2^127, and the quotient almost certainly overflows a 64-bit register, triggering a #DE (divide-overflow fault). Zeroing rdx before every iteration of the digit-extraction loop is mandatory; omitting it is one of the most common bugs in hand-written integer printing routines.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "76": {
+    "instruction": "div  rcx",
+    "why": "Divides the 128-bit value rdx:rax by rcx (10), placing the quotient back in rax and the remainder in rdx. The remainder (0-9) is the least-significant decimal digit not yet extracted. Because DIV always yields the lowest digit first, digits accumulate in reverse order (ones digit, then tens, then hundreds, …). The buffer is reversed after the loop to produce a human-readable string.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "77": {
+    "instruction": "add  dl, '0'",
+    "why": "ASCII digits '0' through '9' are contiguous starting at code point 48 (0x30). Adding '0' to the raw 0-9 remainder converts it to the correct printable character in a single instruction, without a lookup table or branch. Only dl (the low byte of rdx) is written because the digit value fits in 8 bits and dl is exactly where DIV deposited the remainder.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "80": {
+    "instruction": "test rax, rax",
+    "why": "Checks whether the quotient has reached zero, meaning all decimal digits have been extracted. TEST computes rax AND rax and sets flags without writing a result register. When ZF=1 (rax==0) there are no more digits and the loop exits. Using 'cmp rax, 0' would be equivalent but one byte larger in the 64-bit encoding; test is the preferred idiom.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "90": {
+    "instruction": "lea  rdi, [rbx - 1]",
+    "why": "After the digit-extraction loop, rbx points one past the null terminator written at line 84. The last actual digit character is at rbx-1, which is the right endpoint needed to start the two-pointer reversal. LEA computes rbx-1 as a pure address expression without a memory load, and stores it in rdi (the right pointer) without modifying rbx.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "130": {
+    "instruction": "test rdi, rdi",
+    "why": "Examines the sign bit of the signed input without modifying rdi. TEST sets the Sign Flag (SF) if bit 63 is set, which means the value is negative in two's complement. jns on the next line branches when SF=0 (non-negative), skipping negation. Using TEST rather than 'cmp rdi, 0' avoids the implicit subtraction and is one byte shorter.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "131": {
+    "instruction": "jns  .s_pos",
+    "why": "JNS (Jump if Not Signed) branches when the Sign Flag is clear, meaning the input is zero or positive. This skips the negation and sign-flag recording below and jumps straight to the magnitude-extraction loop. The name 'not signed' refers to the processor flag, not to the type — it means 'the result had a non-negative sign bit'.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "132": {
+    "instruction": "neg  rdi",
+    "why": "Computes the two's complement negation (0 - rdi), making the value positive so the unsigned digit-extraction loop works correctly on the magnitude. The r13 flag set on the previous line remembers that a '-' prefix must be prepended after digit extraction. Special case: NEG of INT64_MIN (0x8000000000000000) overflows back to itself — the code avoids this by never calling i64_to_dec with INT64_MIN, or accepting the overflow silently for the demo.",
+    "doc_url": "https://www.felixcloutier.com/x86/neg"
+  },
+  "146": {
+    "instruction": "xor  rdx, rdx",
+    "why": "Same mandatory rdx-clear as in u64_to_dec: DIV uses rdx:rax as a 128-bit dividend. Here the function is operating on the unsigned magnitude of a signed integer, so the same rule applies. Forgetting this zero means rdx holds whatever byte values were last computed in the sign-handling block, producing a completely wrong quotient.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "148": {
+    "instruction": "div  rcx",
+    "why": "Extracts one decimal digit per iteration by dividing the remaining magnitude by 10. Digits accumulate in the buffer in reverse order (lowest-order digit first) and are reversed after the loop. This is the standard algorithm for converting a binary integer to a decimal string: each division peels off one digit from the right of the decimal representation.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "220": {
+    "instruction": "and  rcx, 0xF",
+    "why": "Isolates the lowest 4 bits of the current value, which is exactly one hexadecimal digit (a nibble, value 0-15). This is the bitwise equivalent of taking value mod 16, but implemented as a single AND rather than a division. All higher bits are discarded; only the bottom nibble determines the hex character to emit.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "223": {
+    "instruction": "add  cl, 'A' - 10",
+    "why": "Converts nibble values 10-15 to the ASCII characters 'A'-'F'. Subtracting 10 maps 10-15 to 0-5, then adding 'A' (65) maps 0-5 to 65-70 ('A'-'F'). The constant 'A' - 10 = 55 is evaluated at assemble time. This avoids a conditional branch for the alphabetic hex digits and merges the two steps into one add instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "230": {
+    "instruction": "shr  rax, 4",
+    "why": "Shifts the remaining value right by 4 bits to expose the next nibble in the low 4 bits for the next iteration. This is the hexadecimal equivalent of dividing by 16, but implemented as a logical shift rather than a division because 16 is a power of two. The shift is exact and one cycle, whereas a general DIV instruction takes 20-90 cycles on modern CPUs.",
+    "doc_url": "https://www.felixcloutier.com/x86/shr"
+  },
+  "272": {
+    "instruction": "movzx rcx, byte [rdi]",
+    "why": "Loads one ASCII character and zero-extends it to 64 bits. Without zero-extension, the upper bytes of rcx would retain stale values, corrupting the range checks ('cmp cl, 9' etc.) and the final digit accumulation. MOVZX is the canonical idiom for loading narrow values into wide registers in x86-64 assembly.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "281": {
+    "instruction": "imul  rax, rax, 10",
+    "why": "Shifts the accumulated result left by one decimal place before adding the new digit. This is Horner's method: the string '1234' is parsed as (((1*10+2)*10+3)*10+4). Each new character is incorporated by multiplying the running total by the base and adding the digit value. Without the multiply the digits would simply accumulate additively and the result would be their sum rather than their positional value.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "330": {
+    "instruction": "shl  rax, 4",
+    "why": "Shifts the accumulated hex result left by 4 bits (one nibble position), making room for the incoming digit. This is the parse-time equivalent of the 'shr rax, 4' used during hex-to-string conversion: multiplying by 16 via a left shift. Using a shift instead of IMUL rax, 16 is identical in result and makes the power-of-2 relationship to hex explicit.",
+    "doc_url": "https://www.felixcloutier.com/x86/shl"
+  },
+  "331": {
+    "instruction": "or   rax, rcx",
+    "why": "Merges the new nibble (0-15) into the bottom 4 bits of rax that were vacated by the 'shl rax, 4'. OR is used rather than ADD because the shift guarantees bits 3:0 of rax are zero; with no overlap between the existing value and the incoming nibble, OR and ADD produce identical results — but OR makes it clear this is a bitwise insertion rather than arithmetic addition.",
+    "doc_url": "https://www.felixcloutier.com/x86/or"
+  }
+}

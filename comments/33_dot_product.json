@@ -1,0 +1,82 @@
+{
+  "65": {
+    "instruction": "push rbp",
+    "why": "The ABI requires rbp to be callee-saved. Even though dot_scalar does not call any other function, establishing and restoring the frame pointer makes the function debuggable: if the process crashes mid-loop, a debugger can still follow the rbp chain back through dot_scalar to its caller. The two-instruction cost is negligible relative to the loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "66": {
+    "instruction": "mov  rbp, rsp",
+    "why": "After saving the caller's rbp, we point rbp at the current stack pointer to create the frame base. This gives debuggers a stable anchor: the chain 'current rbp → caller's rbp → ...' lets any profiler or stack-unwinder reconstruct the exact call path without symbol tables. It also pairs correctly with the 'pop rbp' at function exit.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "68": {
+    "instruction": "xorps xmm0, xmm0",
+    "why": "XORPS zeroes all 128 bits of xmm0 by XORing the register with itself. It is preferred over loading a zero constant from .data because it needs no memory operand and no separate constant. Modern CPUs recognise it as a zero idiom at the rename stage, breaking any false dependency on xmm0's previous value, so the accumulator is ready for the first iteration without waiting for any prior use of xmm0 to retire.",
+    "doc_url": "https://www.felixcloutier.com/x86/xorps"
+  },
+  "75": {
+    "instruction": "movss xmm1, [rdi + rcx*4]",
+    "why": "MOVSS loads the low 32-bit float from memory into xmm1 and zeroes the upper 96 bits, preventing stale data in the upper lanes from affecting subsequent scalar operations. The SIB expression rdi + rcx*4 uses scale 4 because single-precision floats are 4 bytes each, so rcx doubles as the logical element index. The hardware address-generation unit computes the byte offset for free in parallel with instruction decode.",
+    "doc_url": "https://www.felixcloutier.com/x86/movss"
+  },
+  "77": {
+    "instruction": "mulss xmm1, [rsi + rcx*4]",
+    "why": "MULSS ('multiply scalar single-precision') multiplies the low 32-bit float lanes of its two operands and writes the product to xmm1's low lane. The source is a memory reference rather than a preloaded register, saving a separate MOVSS instruction. Only the low 32 bits participate; the upper 96 bits of xmm1 are left unchanged, which is harmless because ADDSS below also reads only the low lane.",
+    "doc_url": "https://www.felixcloutier.com/x86/mulss"
+  },
+  "79": {
+    "instruction": "addss xmm0, xmm1",
+    "why": "ADDSS accumulates the current product (xmm1 low lane) into the running dot-product sum (xmm0 low lane). Operating on a single lane keeps the entire loop state in one scalar register. The three-instruction sequence MOVSS / MULSS / ADDSS maps one-to-one onto the C statement 'sum += A[i] * B[i]' with no extra temporaries and no memory writes inside the loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/addss"
+  },
+  "104": {
+    "instruction": "xorps xmm0, xmm0",
+    "why": "In the SIMD path xmm0 is a 4-wide lane accumulator: four independent partial sums run in parallel. All four lanes must start at 0.0 before the loop. XORPS zeroes all 128 bits in one instruction regardless of how many lanes will be active. Any partial initialisation (e.g. using MOVSS for only lane 0) would leave stale values in the other three lanes, corrupting the final horizontal sum.",
+    "doc_url": "https://www.felixcloutier.com/x86/xorps"
+  },
+  "108": {
+    "instruction": "shr  rcx, 2",
+    "why": "Each SSE iteration consumes 4 floats, so the main loop runs n/4 times. Right-shifting by 2 divides by 4 using a single fast shift instead of a full DIV instruction; this works because 4 is a power of two. The remainder (n mod 4 straggler floats) is handled in the tail loop below, ensuring the algorithm is correct for array lengths that are not multiples of 4.",
+    "doc_url": "https://www.felixcloutier.com/x86/sal"
+  },
+  "115": {
+    "instruction": "movups xmm1, [rdi + r8]",
+    "why": "MOVUPS ('move unaligned packed singles') loads 16 bytes (4 floats) from any memory address, even one not aligned to a 16-byte boundary. The alternative, MOVAPS, would be marginally faster on very old hardware but raises a General Protection Fault if the address is not 16-byte aligned. Using MOVUPS is the safe default; on modern CPUs (Nehalem and later) there is no speed difference for aligned loads.",
+    "doc_url": "https://www.felixcloutier.com/x86/movups"
+  },
+  "119": {
+    "instruction": "mulps  xmm1, xmm2",
+    "why": "MULPS ('multiply packed singles') multiplies all four 32-bit float lanes of xmm1 by the corresponding lanes of xmm2 in a single instruction, producing {A[i+3]*B[i+3], A[i+2]*B[i+2], A[i+1]*B[i+1], A[i]*B[i]}. A scalar loop would need four MULSS instructions and four separate loads to achieve the same work, making the packed version approximately 4x faster in terms of arithmetic throughput per clock.",
+    "doc_url": "https://www.felixcloutier.com/x86/mulps"
+  },
+  "122": {
+    "instruction": "addps  xmm0, xmm1",
+    "why": "ADDPS ('add packed singles') adds all four lanes of xmm1 into the corresponding lanes of the accumulator xmm0. This keeps four independent partial sums running simultaneously — one per lane — without any cross-lane interaction. These partial sums are collapsed into a single scalar only once after the main loop via HADDPS, rather than after each product, minimising expensive horizontal operations.",
+    "doc_url": "https://www.felixcloutier.com/x86/addps"
+  },
+  "166": {
+    "instruction": "haddps xmm0, xmm0",
+    "why": "After the main loop xmm0 = {d, c, b, a} where each lane holds the sum of every 4th product. ADDPS would only add corresponding lanes across two registers; we need to collapse within a single register. HADDPS ('horizontal add packed singles') adds adjacent pairs: {d, c, b, a} becomes {d+c, b+a, d+c, b+a}. One more HADDPS is then needed to finish the reduction.",
+    "doc_url": "https://www.felixcloutier.com/x86/haddps"
+  },
+  "167": {
+    "instruction": "haddps xmm0, xmm0",
+    "why": "A second HADDPS collapses the two remaining pairs: {d+c, b+a, d+c, b+a} becomes {(d+c)+(b+a), ...} = a+b+c+d broadcast into all four lanes. The total dot product now sits in xmm0[0] (the lowest 32 bits). Two HADDPS instructions are the minimal cost to reduce a 4-float accumulator to a scalar — there is no single 'sum all lanes' instruction in SSE3.",
+    "doc_url": "https://www.felixcloutier.com/x86/haddps"
+  },
+  "187": {
+    "instruction": "cvttss2si rax, xmm0",
+    "why": "CVTTSS2SI ('convert with truncation, scalar single-precision to signed integer') extracts the integer part of the float by truncating toward zero. The 'TT' distinguishes it from CVTSS2SI, which would round to nearest. We want the floor for digit extraction, so truncation is correct here (assuming non-negative input). This integer then gets converted back to float so we can subtract it to isolate the fractional part.",
+    "doc_url": "https://www.felixcloutier.com/x86/cvttss2si"
+  },
+  "232": {
+    "instruction": "cvtsi2ss xmm1, rax",
+    "why": "CVTSI2SS ('convert signed integer to scalar single') converts the integer part (in rax) back to a float so it can be subtracted from the original float in xmm0. This round-trip is intentional: it gives us the exact floor value as a float with no rounding error for small integers, allowing 'xmm0 - xmm1 = fractional part' to be computed precisely using SUBSS.",
+    "doc_url": "https://www.felixcloutier.com/x86/cvtsi2ss"
+  },
+  "234": {
+    "instruction": "subss xmm0, xmm1",
+    "why": "SUBSS subtracts the integer part (as a float, in xmm1) from the original float in xmm0, leaving only the fractional component. For a result of 240.0 this produces 0.0; for a hypothetical 3.14 it would produce 0.14. The subsequent loop then multiplies this fractional remainder by 10 four times to extract four decimal digits, simulating long-division digit extraction by hand.",
+    "doc_url": "https://www.felixcloutier.com/x86/subss"
+  }
+}

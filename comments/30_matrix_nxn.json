@@ -1,0 +1,122 @@
+{
+  "69": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved: any function that modifies rbp must restore it before returning. The `call read_ints` instruction pushes an 8-byte return address; this push starts the callee-save block and contributes to reaching 16-byte rsp alignment before nested calls to scanf. Without it, the caller's frame pointer would be silently overwritten.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "74": {
+    "instruction": "sub rsp, 8",
+    "why": "At this point the stack holds: return address (8) + rbp (8) + rbx (8) + r12 (8) + r13 (8) = 40 bytes of adjustment; 40 mod 16 = 8. Subtracting 8 makes the total 48 bytes (48 mod 16 = 0), restoring 16-byte alignment before every `call scanf`. Misalignment causes silent crashes in library code that relies on aligned SSE/AVX stack accesses.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "77": {
+    "instruction": "mov r12d, esi",
+    "why": "Writing to a 32-bit register in x86-64 automatically zero-extends the value into the full 64-bit register, so `mov r12d, esi` gives a clean 64-bit r12 equal to the 32-bit count. This is preferred over `movsx r12, esi` (sign-extend) when the value is logically unsigned or nonnegative. r12 is callee-saved, so it holds the count safely across all calls to scanf.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "78": {
+    "instruction": "xor r13d, r13d",
+    "why": "Using the 32-bit form `r13d` saves the REX.W prefix byte compared to `xor r13, r13`, while achieving the same result: all 64 bits of r13 are zeroed because any 32-bit write zero-extends into the full register. r13 is the loop index i across scanf calls; starting it at zero matches `int i = 0;` in the C equivalent.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "87": {
+    "instruction": "lea rsi, [rbx + r13*4]",
+    "why": "`lea` computes the byte address of arr[i] as `rbx (base) + r13*4 (index × element size)` without touching memory. The result is passed to scanf in rsi (the second argument register) as the destination pointer &arr[i]. The scale factor of 4 matches the 4-byte width of each `int`; changing it to 8 would be needed for `long long` arrays.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "92": {
+    "instruction": "xor eax, eax",
+    "why": "scanf is variadic. The System V AMD64 ABI requires AL to hold the count of floating-point arguments in XMM registers before any variadic call. We pass zero floats, so rax must be 0. This must be repeated before every scanf call because the previous call may have left rax nonzero; the ABI does not zero rax between calls.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "127": {
+    "instruction": "mov ecx, [dimN]",
+    "why": "dimN is a global variable in .bss, filled by scanf earlier in main. Unlike BS_LEN (an assembler `equ` constant baked into the binary at assemble time), N is a runtime value that can only be read from memory. This load brings it into ecx — a caller-saved register that is safe to use in mat_add_nxn because this function makes no calls. Writing to ecx also zeroes the upper 32 bits of rcx.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "128": {
+    "instruction": "imul ecx, ecx",
+    "why": "`imul ecx, ecx` computes N × N, the total number of elements in the matrix, and writes the result back to ecx. This two-operand form of imul does a 32-bit signed multiply; the upper half of the 64-bit product is discarded because N ≤ 8, so N² ≤ 64 fits easily in 32 bits. The resulting element count is used as the exclusive upper bound for the flat-array loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "131": {
+    "instruction": "xor edx, edx",
+    "why": "edx is the loop index i (0-based), and zeroing via the 32-bit form clears all 64 bits of rdx due to x86-64's zero-extension rule. rdx is then used as a 64-bit index in the addressing expressions `[AN + rdx*4]` and `[BN + rdx*4]` — this is correct because every `inc edx` in the loop keeps the upper 32 bits of rdx at zero. mat_add_nxn makes no calls, so using the caller-saved edx/rdx is safe.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "138": {
+    "instruction": "mov eax, [AN + rdx*4]",
+    "why": "AN is the absolute label of the global matrix array (valid here because the binary is linked with -no-pie). rdx*4 converts the 64-bit loop index to a byte offset for 4-byte ints; rdx — not edx — is used in the addressing expression because x86-64 memory addressing requires 64-bit index registers. eax receives a 32-bit int because the array stores `int`, not `long`.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "188": {
+    "instruction": "mov ebx, [dimN]",
+    "why": "N is loaded from the global dimN once at the start of mat_mul_nxn and stored in rbx (callee-saved). Every loop comparison (`cmp r13d, ebx`) and every flat-index multiply (`imul r12d, ebx`) reads N from rbx rather than re-loading it from memory on each iteration. Keeping N in a register avoids hundreds of memory reads across a large matrix multiply.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "203": {
+    "instruction": "xor eax, eax",
+    "why": "eax is the dot-product accumulator `sum` for output element CN[i][j]. It must be reset to 0 at the start of each new (i, j) pair; otherwise each output element would accumulate contributions from all previous elements. This reset is placed inside the `j` loop, after `r14d` (j) is known to be in range, so it runs exactly once per output element.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "213": {
+    "instruction": "imul r12d, ebx",
+    "why": "`imul r12d, ebx` computes i × N — the row offset for a matrix with N columns. Unlike the 3×3 fixed case where the stride is the constant 3, here N is a runtime variable held in rbx, so a register-register multiply is unavoidable. The 32-bit form is used throughout because the maximum flat index (N²-1 ≤ 63) fits comfortably in 32 bits.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "225": {
+    "instruction": "imul ecx, [BN + r12*4]",
+    "why": "`imul reg, mem` multiplies ecx (which holds AN[i][k]) by the 32-bit value at BN[k*N+j] in one instruction, avoiding a separate load into a temporary register. After this, ecx = AN[i][k] × BN[k][j], one term of the dot product for CN[i][j]. The `add eax, ecx` on the next line accumulates it into the running sum.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "299": {
+    "instruction": "mov r14, r12",
+    "why": "r14 will hold `row * N`, the flat index of the first element in the current row, precomputed once before the inner column loop. Copying the 64-bit row counter r12 into r14 first (rather than computing row*N from scratch inside the loop) keeps the row counter in r12 unchanged while the subsequent imul operates on r14. Both registers are callee-saved, so printf does not disturb either.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "300": {
+    "instruction": "imul r14, r13",
+    "why": "This computes `row * N` (r14 × r13) and stores the result in r14. Performing this multiply once per row — rather than inside the column loop where it would repeat N times — is a classic strength-reduction optimization. The inner loop then simply adds `col` (rbx) to r14 to get the flat index of each element, replacing a repeated multiply with a cheap add.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "303": {
+    "instruction": "xor rbx, rbx",
+    "why": "rbx is the column counter col, used as a 64-bit value throughout the inner loop because it appears directly in the addressing expression `[CN + rax*4]` via `lea rax, [r14 + rbx]`. The 64-bit form `xor rbx, rbx` (not rbx→ebx) is used here to zero rbx in its full 64-bit width, avoiding any chance that a previous high 32-bit residue contaminates the address computation.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "309": {
+    "instruction": "lea rax, [r14 + rbx]",
+    "why": "`lea` computes the flat index `row*N + col` (r14 + rbx) as pure arithmetic, storing the result in rax without reading any memory. This flat index is then used in `[CN + rax*4]` to address the correct element. Separating the index computation from the memory access makes the addressing expression simpler and keeps the index in a register for potential reuse.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "313": {
+    "instruction": "movsx rsi, dword [CN + rax*4]",
+    "why": "`movsx` loads a 32-bit integer from memory and sign-extends it to 64 bits in rsi. This is necessary because printf receives all arguments as 64-bit register values under the ABI, but CN stores 32-bit ints. Without sign extension, a negative value like -1 (0xFFFFFFFF as 32 bits) would incorrectly appear as 4294967295 when printf treats rsi as a 64-bit signed integer.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "365": {
+    "instruction": "lea rsi, [rel dimN]",
+    "why": "scanf needs the address of dimN — a pointer to where it should write the integer it reads — not the current value of dimN. `lea [rel dimN]` computes this address using RIP-relative addressing (valid for position-independent code), and places it in rsi (the second argument register). This is equivalent to `scanf(\"%d\", &dimN)` in C.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "371": {
+    "instruction": "imul eax, eax",
+    "why": "After the printf call for the 'enter matrix A' prompt, eax is recomputed as N × N because printf (a variadic function) may have clobbered rax. The pattern `mov eax, [dimN]; imul eax, eax` always reloads N from memory and squares it fresh; it cannot be precomputed before printf and stored in a caller-saved register because printf would destroy that too.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "379": {
+    "instruction": "mov eax, [dimN]",
+    "why": "N*N must be reloaded and recomputed a second time, after the printf call for the matrix B prompt. printf is variadic and is permitted to clobber rax, rdx, rcx, rsi, rdi, r8–r11 — every caller-saved register. Because no callee-saved register was used to hold N*N across this call, there is no choice but to reload dimN from memory and redo the multiply.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "380": {
+    "instruction": "imul eax, eax",
+    "why": "This is the third computation of N² in main — once before reading matrix A, and again before reading matrix B. The repetition is the direct cost of not reserving a callee-saved register to hold N² across calls. In a more register-rich design, N² could be stored in (say) r15 at the start of main, but the extra push/pop for r15 must be weighed against the saved reloads.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "420": {
+    "instruction": "xor eax, eax",
+    "why": "The System V ABI returns integer results in rax. `main` must return 0 to signal success to the OS. `xor eax, eax` zero-extends into the full 64-bit rax (x86-64 zero-extension rule for 32-bit writes) in 2 bytes. The C runtime passes this value to `exit()`, and the shell reads it via `$?`.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "22": {
+    "instruction": "global main",
+    "why": "The linker's job is to combine many object files into one executable. It needs to know which symbol is the entry point. Without 'global main', the symbol 'main' stays file-private and the linker fails with 'undefined reference to main'. The C runtime startup code (crt0) calls main() after initialising argc/argv/envp — it can only do that if the name is exported.",
+    "doc_url": "https://www.nasm.us/doc/nasmdoc7.html"
+  },
+  "23": {
+    "instruction": "extern printf",
+    "why": "NASM compiles one file at a time and rejects any symbol it has never seen. 'extern' is a promise to NASM: 'this name is defined somewhere else — leave a placeholder and let the linker fill it in later'. Without this declaration NASM would error on the 'call printf' line. gcc automatically links libc, so the linker finds the real printf there.",
+    "doc_url": "https://www.nasm.us/doc/nasmdoc7.html"
+  },
+  "30": {
+    "instruction": "msg db \"Hello, World!\", 10, 0",
+    "why": "Three separate things are going on here. (1) The string bytes are laid out literally in the binary. (2) The 10 (ASCII newline, '\\n') is needed because printf does not add one automatically — without it, the cursor stays on the same line and the shell prompt appears right after the output. (3) The 0 (null terminator) is how C and printf know where the string ends: they walk bytes until they find 0. Skip it and printf reads garbage past the string, potentially crashing.",
+    "doc_url": "https://www.nasm.us/doc/nasmdoc3.html"
+  },
+  "46": {
+    "instruction": "push rbp",
+    "why": "rbp is a 'callee-saved' register — the System V AMD64 ABI guarantees that if you call a function, rbp will be unchanged when it returns. That guarantee only holds if every function that uses rbp saves the old value on entry and restores it on exit. If print_str skipped this push, rbp at the call site (main) would be silently corrupted. The second effect: in main specifically, 'call main' pushes an 8-byte return address, leaving rsp misaligned to 8 mod 16. This push adds another 8 bytes and brings the stack back to 0 mod 16 — the mandatory alignment before any subsequent 'call'.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "47": {
+    "instruction": "mov rbp, rsp",
+    "why": "rsp is a moving target — it changes every time you push, pop, or call. rbp becomes a stable anchor that points to the base of this function's stack frame and does not move for the rest of the function. Local variables are then addressed as [rbp-8], [rbp-16], etc., and that offset is the same whether rsp has since moved or not. This is also the mechanism debuggers use to walk the call stack: each function's saved rbp forms a linked list back through all callers.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "49": {
+    "instruction": "xor     eax, eax",
+    "why": "printf is a variadic function (C's '...'). The System V AMD64 ABI has a rule specifically for variadic calls: AL (the low byte of rax) must contain the number of floating-point arguments passed in XMM registers. We pass zero floats, so we must set eax to 0 before the call. 'xor eax, eax' is the idiomatic way to zero a register for three reasons: (1) it encodes in only 2 bytes, versus 5 bytes for 'mov eax, 0'; (2) on x86-64, writing to eax automatically zeroes the upper 32 bits of rax — no extra instruction needed; (3) modern CPUs recognise it as a 'zero idiom' and handle it without needing to read the old value of eax.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "50": {
+    "instruction": "call    printf",
+    "why": "The first argument to printf (the format string pointer) is in rdi — which is exactly where print_str received its own argument. We do not need to move it; the same register is already in the right place. CALL pushes the 8-byte return address and jumps to printf. When printf returns, execution resumes at the next instruction (pop rbp). rdi, rsi, rax and other 'caller-saved' registers may now hold different values — printf is allowed to overwrite them — but rbx, rbp, r12-r15 are guaranteed unchanged.",
+    "doc_url": "https://www.felixcloutier.com/x86/call"
+  },
+  "51": {
+    "instruction": "pop     rbp",
+    "why": "This undoes the push rbp from the prologue. After the push, the saved caller's rbp value was at the top of the stack. After the call to printf, rsp has returned to exactly that position (printf balanced its own stack). Popping restores the caller's rbp and advances rsp past it, so rsp now points at the 8-byte return address that 'call print_str' had pushed. The next instruction, ret, pops that return address and jumps back to the caller.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "52": {
+    "instruction": "ret",
+    "why": "RET pops the 8-byte value at [rsp] and jumps to it. That value was placed there by 'call print_str' in main. For this to work, rsp must point exactly at the return address — not one byte off. Our push rbp / pop rbp pair is perfectly balanced (each 8 bytes), so rsp is in the right place. If you ever see a crash on ret, the most common cause is an unbalanced push/pop corrupting rsp.",
+    "doc_url": "https://www.felixcloutier.com/x86/ret"
+  },
+  "56": {
+    "instruction": "push    rbp",
+    "why": "Same callee-save obligation as in print_str: main is a normal C function and rbp must be preserved. In main there is an additional subtlety around stack alignment. The C runtime calls main with 'call main', pushing 8 bytes (the return address), leaving rsp = 8 mod 16. This push adds 8 more bytes, bringing rsp to 0 mod 16 — the 16-byte alignment that the ABI requires to be satisfied *before* any call instruction. printf (called later through print_str) requires SSE instructions internally that fault on misaligned stacks.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "57": {
+    "instruction": "mov     rbp, rsp",
+    "why": "For main, which has no local variables, this is not strictly necessary. It is here because it is standard practice and because debuggers and profilers (gdb, perf, valgrind) rely on the rbp chain to produce readable backtraces. Without it, 'bt' in gdb would show '??' for every frame above main.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "59": {
+    "instruction": "lea     rdi, [rel msg]",
+    "why": "Two choices of instruction, two choices of addressing. LEA ('Load Effective Address') computes an address and stores it in the destination register without reading any memory. MOV would dereference the address and load the bytes stored there — which would give us the first 8 bytes of the string, not the pointer to it. '[rel msg]' uses RIP-relative addressing: the address is encoded in the instruction as an offset from the program counter, so the binary works correctly wherever the OS loads it. Without 'rel', NASM would use an absolute 64-bit address, which requires a special 'R_X86_64_64' relocation that -no-pie binaries can use but PIE/shared libraries cannot.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "60": {
+    "instruction": "call    print_str",
+    "why": "We call our own wrapper rather than calling printf directly because it keeps the call site readable and hides the eax-zeroing boilerplate. Every time we want to print a plain string we just load rdi and call print_str. If we later wanted to redirect output or add logging, we change only print_str. This is the assembly equivalent of writing a helper function.",
+    "doc_url": "https://www.felixcloutier.com/x86/call"
+  },
+  "62": {
+    "instruction": "xor     eax, eax",
+    "why": "The System V ABI specifies that main returns its exit code in rax. The C runtime reads rax after main returns and passes it to the kernel's exit() syscall. The shell then makes this value visible as '$?'. Zero conventionally means success; any non-zero value signals an error. 'xor eax, eax' is preferred over 'mov rax, 0' for the same reasons as before: 2 bytes, zeroes all 64 bits via the implicit upper-bits-clear rule, and no dependency on the old value.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "63": {
+    "instruction": "pop     rbp",
+    "why": "Restores the C runtime's rbp before we return to it. The stack at this point has exactly two items above rsp: the value we pushed for rbp, then below it the return address from 'call main'. After this pop, rsp points directly at that return address, ready for ret.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "64": {
+    "instruction": "ret",
+    "why": "Returns to the C runtime startup code which called main. The runtime then calls exit(rax) — using whatever value we left in rax (0 = success). The push rbp at entry and pop rbp here are balanced. The 'call main' pushed the return address; we have not pushed anything else unmatched; so rsp points exactly at that return address and ret pops it correctly.",
+    "doc_url": "https://www.felixcloutier.com/x86/ret"
+  }
+}

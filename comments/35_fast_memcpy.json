@@ -1,0 +1,77 @@
+{
+  "77": {
+    "instruction": "push rbp",
+    "why": "Saves the caller's frame pointer as required by the callee-save ABI contract. fast_memcpy may be called from C code (or from _start), and the caller relies on rbp being unchanged after the return. The push also corrects stack alignment: 'call fast_memcpy' pushed an 8-byte return address (rsp = 8 mod 16), and this push restores 0 mod 16 alignment before the three subsequent pushes.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "78": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Establishes a stable frame-base pointer for this function's stack frame. rsp will shift as the three callee-saved registers are pushed and may shift further in potential future revisions; rbp stays fixed at the point just after the prologue, giving debuggers a reliable reference to unwind the call chain through this frame.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "79": {
+    "instruction": "push rbx",
+    "why": "rbx holds the prefix byte count (bytes needed to reach 32-byte alignment). It must survive the byte-at-a-time copy loop, which uses cl/rdi/r12 but not rbx itself. Storing it in a callee-saved register avoids spilling to the stack in the inner loop and is safer than using a caller-saved register that an inlined helper might accidentally clobber.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "80": {
+    "instruction": "push r12",
+    "why": "r12 is used as the running source pointer throughout the copy (tracking the current src position across the prefix loop, the 32-byte AVX loop, the 16-byte SSE loop, and the byte tail). Since all of these loops eventually converge into a single ret, keeping src in a callee-saved register eliminates the need to save and reload it around any internal call site — and makes the code correct if this function is ever modified to call a helper.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "81": {
+    "instruction": "push r13",
+    "why": "r13 holds the remaining byte count throughout the entire function. This count is read and decremented in three separate loops (prefix, AVX main, SSE tail, byte tail). Storing it in a callee-saved register rather than keeping it in rdx (a caller-saved argument register) is a defensive choice: rdx is clobbered by syscall and by the string instructions, so if any future edit added a diagnostic call inside the function, rdx would be destroyed.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "95": {
+    "instruction": "and  rcx, 31",
+    "why": "Computes dst & 31 — the distance from the current dst pointer to the previous 32-byte boundary. This is the number of bytes by which dst is misaligned. For a 32-byte aligned address the result is 0 (no prefix needed); for an address ending in ...0x10, the result is 16, meaning 16 bytes must be copied one-at-a-time before dst reaches the next 32-byte boundary and VMOVDQA / VMOVNTDQ can safely be used. This AND-with-mask pattern is the standard alignment check for any power-of-2 width.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "131": {
+    "instruction": "vmovdqu ymm0, [r12]",
+    "why": "Loads 32 bytes from the source into YMM register ymm0. The source (r12) may be at any alignment because we peel the destination to 32-byte alignment, not the source. VMOVDQU ('Move Unaligned 256-bit') handles any source alignment without faulting. Attempting VMOVDQA on a misaligned source would raise a general-protection exception. On modern Intel and AMD hardware the unaligned load has the same throughput as aligned when the address is naturally aligned at runtime.",
+    "doc_url": "https://www.felixcloutier.com/x86/vmovdqu8:vmovdqu16:vmovdqu32:vmovdqu64"
+  },
+  "133": {
+    "instruction": "vmovntdq [rdi], ymm0",
+    "why": "VMOVNTDQ ('Move Non-Temporal Double Quadword', 256-bit form) writes 32 bytes directly to memory, bypassing the L1/L2/L3 cache hierarchy entirely — the 'NT' stands for Non-Temporal, meaning the data is not expected to be reused soon. For copies larger than the NT_THRESHOLD (256 bytes here, typically a few MB in production), this prevents the source data from evicting useful working-set data from the cache. The address must be 32-byte aligned; we ensured that in the prefix loop. After all NT stores, SFENCE is required to make the writes visible to other cores.",
+    "doc_url": "https://www.felixcloutier.com/x86/movntdq"
+  },
+  "151": {
+    "instruction": "vmovdqa [rdi], ymm0",
+    "why": "For small copies (below NT_THRESHOLD), we use VMOVDQA ('Move Aligned 256-bit') instead of VMOVNTDQ. Regular (temporal) stores go through the cache, which is faster for small buffers because the written data may soon be read back by the application. Non-temporal stores, despite bypassing cache on the write, impose a 'read-for-ownership' round-trip cost on small copies that makes them slower than the cached path. The alignment requirement (32 bytes) is met because the prefix loop brought dst to a 32-byte boundary.",
+    "doc_url": "https://www.felixcloutier.com/x86/vmovdqa32:vmovdqa64"
+  },
+  "164": {
+    "instruction": "movdqu xmm0, [r12]",
+    "why": "After the 32-byte AVX loop, up to 31 bytes may remain. This SSE2 instruction handles the next 16-byte chunk using a 128-bit XMM register, halving the residual in one step. MOVDQU is used for the load because neither src nor dst is guaranteed to be 16-byte aligned at this point (dst alignment was only ensured at 32-byte boundaries, and the 32-byte loop may have left it at a 16-byte-but-not-32-byte boundary).",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu:vmovdqu8:vmovdqu16:vmovdqu32:vmovdqu64"
+  },
+  "185": {
+    "instruction": "sfence",
+    "why": "SFENCE ('Store Fence') is a memory-ordering instruction that prevents any store issued before SFENCE from being reordered past any store issued after it. Non-temporal stores are weakly ordered by design — the CPU may delay committing them to the memory subsystem for many cycles to batch them efficiently. Without SFENCE, a second thread reading the destination buffer could observe partially written data even after fast_memcpy has returned. SFENCE ensures all NT stores are globally visible before the function returns.",
+    "doc_url": "https://www.felixcloutier.com/x86/sfence"
+  },
+  "190": {
+    "instruction": "vzeroupper",
+    "why": "VZEROUPPER clears bits 128-255 of all YMM registers (zeroing the upper half). When AVX and SSE code are mixed, Intel CPUs can incur a heavy penalty (up to ~100 cycles) when transitioning from state where upper YMM bits are 'dirty' (modified by AVX instructions) to SSE instructions that assume those bits are zero. Calling VZEROUPPER before returning from any function that used AVX instructions prevents this transition penalty for any SSE-compiled caller. FFmpeg calls vzeroupper at the end of every SIMD kernel for exactly this reason.",
+    "doc_url": "https://www.felixcloutier.com/x86/vzeroall:vzeroupper"
+  },
+  "220": {
+    "instruction": "imul  r12, r12, 0x0101010101010101",
+    "why": "Replicates a single fill byte into all 8 bytes of a 64-bit register by multiplying by the 'broadcast constant' 0x0101010101010101. For example, fill byte 0xAB gives 0xAB * 0x0101... = 0xABABABABABABABAB. This 8-byte value is then used to write 8 bytes at a time in the tail loop via r12b or the full r12 in scenarios where 8-byte stores are more efficient. It is a standard scalar trick for constructing a byte-repeated 64-bit pattern before promoting to a vector register.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "225": {
+    "instruction": "vpbroadcastb ymm0, xmm0",
+    "why": "VPBROADCASTB ('Packed Broadcast Byte', AVX2) copies byte 0 of xmm0 into all 32 byte lanes of ymm0, producing a 256-bit register where every byte equals the fill value. This is the SIMD equivalent of memset's value expansion. The alternative — loading a 32-byte aligned constant from memory — would require that constant to be pre-computed and stored, and would use a load port. VPBROADCASTB uses the shuffle unit and requires only one input byte, making it the preferred initialization method for fill operations.",
+    "doc_url": "https://www.felixcloutier.com/x86/vpbroadcast"
+  },
+  "257": {
+    "instruction": "vmovntdq [rdi], ymm0",
+    "why": "Same non-temporal store reasoning as in fast_memcpy: for large fills (>= NT_THRESHOLD bytes) the fill data will not be reused immediately, so bypassing the cache avoids polluting it with repetitive fill bytes. Video frame zeroing (clearing buffers between codec frames) is a canonical use-case: a typical 1080p luma plane is ~2 MB, far larger than L3 cache capacity, so NT stores are almost always the right choice there.",
+    "doc_url": "https://www.felixcloutier.com/x86/movntdq"
+  }
+}

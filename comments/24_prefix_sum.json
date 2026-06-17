@@ -1,0 +1,72 @@
+{
+  "65": {
+    "instruction": "push rbp",
+    "why": "The System V AMD64 ABI designates rbp as callee-saved. Pushing it on entry saves the caller's frame pointer so we can restore it before returning, preserving the invariant that rbp is unchanged across any function call. It also provides the reference point for building this function's stack frame.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "66": {
+    "instruction": "mov  rbp, rsp",
+    "why": "This snapshot of rsp into rbp creates a stable frame-pointer anchor that does not shift when push or pop instructions move rsp later. Stack-based debuggers (gdb, lldb) rely on this frame-pointer chain to unwind the call stack and display meaningful backtraces for every active function.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "72": {
+    "instruction": "mov  eax, [rdi]",
+    "why": "The first element of an inclusive scan equals the first input element directly (no prior elements to add). We load it as a 32-bit value (eax, not rax) because the array is int32_t; the CPU zero-extends the 32-bit load into the full 64-bit register, but we store it back as a dword on the next line, so only the lower 32 bits matter.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "81": {
+    "instruction": "mov  eax, [rsi + rcx*4 - 4]",
+    "why": "For an inclusive scan, out[i] = out[i-1] + in[i]. This loads the previously-computed output element at index (i-1), which lives 4 bytes before the current write position. Reading from the output array (rsi) rather than from the input array (rdi) is intentional: it chains the running sum correctly even though we overwrite the output as we go.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "82": {
+    "instruction": "add  eax, [rdi + rcx*4]",
+    "why": "This is the core of the inclusive scan: add the current input element in[i] to the running total already in eax (which holds out[i-1]). The result in eax is out[i] = out[i-1] + in[i], the definition of an inclusive prefix sum.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "109": {
+    "instruction": "mov  dword [rsi], 0",
+    "why": "The exclusive scan is defined so that out[0] = 0 (the additive identity), because no elements precede index 0. Without writing this explicit 0, the output buffer would contain whatever happened to be in memory at that address, which could be any garbage value.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "111": {
+    "instruction": "xor  rax, rax",
+    "why": "The exclusive scan's running total starts at 0 before any elements are added. XOR-ing rax with itself is the fastest way to zero a register: 2 bytes versus 5 for 'mov rax, 0', and the CPU can eliminate the dependency on rax's previous value by recognising this as a zero-idiom, allowing earlier out-of-order execution.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "148": {
+    "instruction": "movdqa xmm0, [rdi]",
+    "why": "MOVDQA (Move Double Quadword Aligned) loads 16 bytes — four int32 values — into an XMM register in one memory access. The 'align 16' directive on the array in .data guarantees the address is 16-byte aligned, satisfying MOVDQA's requirement. Loading all four elements at once is the necessary prerequisite for computing their prefix sums in a branchless SIMD sequence.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqa:vmovdqa32/64"
+  },
+  "153": {
+    "instruction": "pslldq xmm1, 4",
+    "why": "PSLLDQ shifts the entire 128-bit XMM register left by a given number of bytes, shifting in zero bytes on the right. Shifting by 4 bytes moves element a0 into the position of a1, a1 into a2, a2 into a3, and zero fills lane 0. When added to the original xmm0, lane i gets a[i] + a[i-1], which is the first stage of the parallel prefix-sum tree — doubling the span of the scan from 1 element to 2.",
+    "doc_url": "https://www.felixcloutier.com/x86/pslldq"
+  },
+  "155": {
+    "instruction": "paddd  xmm0, xmm1",
+    "why": "PADDD adds four pairs of 32-bit integers in parallel. After the shift on line 153, adding xmm1 (the shifted copy) to xmm0 computes out[i] = a[i] + a[i-1] for all four lanes simultaneously, completing the first stage of the 2-stage parallel scan. Two stages are sufficient for 4 elements: stage 1 spans 1 neighbour, stage 2 spans 2 neighbours, covering all of 0..3.",
+    "doc_url": "https://www.felixcloutier.com/x86/paddd"
+  },
+  "159": {
+    "instruction": "movdqa xmm1, xmm0",
+    "why": "We need to shift the current partial-sum state without losing it, because we must add the shifted version back to the unshifted version. Copying xmm0 to xmm1 first preserves the stage-1 result in xmm0 while xmm1 is modified by the next shift, enabling the two-source add on line 162.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqa:vmovdqa32/64"
+  },
+  "160": {
+    "instruction": "pslldq xmm1, 8",
+    "why": "Shifting by 8 bytes (two int32 widths) moves the stage-1 partial sums for positions 0 and 1 into the positions of lanes 2 and 3, with zeros filling lanes 0 and 1. When added to xmm0, lanes 2 and 3 gain contributions from the sums that were at lanes 0 and 1, completing the second — and final — stage of the parallel scan for all four elements.",
+    "doc_url": "https://www.felixcloutier.com/x86/pslldq"
+  },
+  "162": {
+    "instruction": "paddd  xmm0, xmm1",
+    "why": "This is the second and final PADDD in the parallel prefix-sum algorithm. After it, xmm0[0]=a0, xmm0[1]=a0+a1, xmm0[2]=a0+a1+a2, xmm0[3]=a0+a1+a2+a3 — all four inclusive prefix sums computed in two SIMD operations instead of three sequential additions. The two-stage shift-and-add is the Hillis-Steele parallel scan pattern mapped onto SSE registers.",
+    "doc_url": "https://www.felixcloutier.com/x86/paddd"
+  },
+  "165": {
+    "instruction": "movdqa [rsi], xmm0",
+    "why": "All four inclusive prefix sums now reside in xmm0 and must be written to the output buffer. MOVDQA stores all 16 bytes in one instruction to a 16-byte-aligned address. The output buffer incl_buf was declared with resd (reserved dwords) in .bss, which the system aligns on at least a 16-byte boundary, so the alignment requirement is satisfied.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqa:vmovdqa32/64"
+  }
+}

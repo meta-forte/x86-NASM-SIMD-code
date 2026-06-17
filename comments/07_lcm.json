@@ -1,0 +1,122 @@
+{
+  "47": {
+    "instruction": "test    rsi, rsi",
+    "why": "'test rsi, rsi' ANDs rsi with itself, discarding the result but setting ZF if rsi is zero. It is a 3-byte zero-test without an immediate operand, shorter than 'cmp rsi, 0' (4 bytes). The Euclidean algorithm terminates when b reaches zero, so this is the correct loop exit condition: GCD(a, 0) = a.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "50": {
+    "instruction": "cqo",
+    "why": "'cqo' sign-extends rax into the full 128-bit pair rdx:rax by replicating rax's sign bit across all 64 bits of rdx. idiv requires a proper 128-bit dividend; if rdx contains leftover garbage from a previous instruction, the division operates on the wrong value and produces a silently incorrect remainder. For non-negative inputs rdx becomes 0, but for negative inputs it must be -1 (all ones), which is exactly what cqo provides.",
+    "doc_url": "https://www.felixcloutier.com/x86/cwd:cdq:cqo"
+  },
+  "51": {
+    "instruction": "idiv    rsi",
+    "why": "idiv divides the signed 128-bit value rdx:rax by rsi, writing the quotient into rax and the remainder into rdx. The Euclidean step needs the remainder (a mod b), which is in rdx after this instruction. 'div' (unsigned form) would be wrong for negative inputs because it interprets rdx:rax as an unsigned 128-bit number. Using idiv ensures correct signed modulo semantics.",
+    "doc_url": "https://www.felixcloutier.com/x86/idiv"
+  },
+  "66": {
+    "instruction": "push    rbp",
+    "why": "lcm_pair calls gcd, which means it must be a well-formed ABI-compliant function itself. Pushing rbp here fulfils the callee-save obligation and, combined with the subsequent push r12 and push r13, brings the total bytes pushed (return address + rbp + r12 + r13 = 32) to a multiple of 16, maintaining alignment for the 'call gcd' inside.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "67": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Establishing rbp as the stable frame pointer lets us address any local data relative to rbp even after rsp moves. Although lcm_pair has no named local variables, the convention is uniform and allows debuggers to walk the call chain correctly.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "68": {
+    "instruction": "push    r12",
+    "why": "r12 is callee-saved. lcm_pair wants to use r12 to hold the argument 'a' across the 'call gcd' — because gcd is also callee-save-compliant and will restore r12, but only if we saved it first. Without this push, the caller of lcm_pair would find its r12 silently overwritten when lcm_pair returns.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "69": {
+    "instruction": "push    r13",
+    "why": "Same obligation as r12: r13 will hold argument 'b' inside lcm_pair, and the ABI requires lcm_pair to restore r13 on exit. Pushing both r12 and r13 also adds 16 bytes of stack, paired with the return address (8) and saved rbp (8), giving 32 bytes total — a multiple of 16, keeping the stack aligned for 'call gcd'.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "72": {
+    "instruction": "mov     r12, rdi",
+    "why": "rdi holds argument 'a' on function entry. After 'call gcd', rdi will be overwritten (it is caller-saved). Saving 'a' into the callee-saved r12 immediately preserves it across the gcd call and the subsequent idiv computation. Without this, we would have no way to recover 'a' after gcd returns.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "73": {
+    "instruction": "mov     r13, rsi",
+    "why": "rsi holds argument 'b' on function entry. Like rdi, rsi is caller-saved and will be destroyed by the gcd call. Moving 'b' to callee-saved r13 lets us use it later as the multiplier in '(a/GCD) * b'. If 'b' were left in rsi, it would be gone after 'call gcd'.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "75": {
+    "instruction": "call    gcd",
+    "why": "We call gcd with rdi = a and rsi = b (set up from the function arguments). gcd returns GCD(a, b) in rax. Because gcd is a leaf function that only uses rax and rdx (both caller-saved), it does not disturb r12 or r13 where we stored a and b. If gcd used any callee-saved registers it would push/pop them itself, still leaving r12/r13 intact.",
+    "doc_url": "https://www.felixcloutier.com/x86/call"
+  },
+  "76": {
+    "instruction": "mov     rcx, rax",
+    "why": "rax holds GCD(a, b) returned by gcd, but 'mov rax, r12' on the next line will overwrite rax with 'a'. We save the GCD into rcx so it is still available as the idiv divisor after rax is reassigned. rcx is caller-saved, which is fine here because we do not call anything else before using rcx.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "79": {
+    "instruction": "mov     rax, r12",
+    "why": "idiv reads its dividend from rdx:rax, so 'a' must be in rax before cqo and idiv. r12 still holds 'a' from line 72. This is also why we saved 'a' in a callee-saved register: we need it here, after gcd has returned and may have overwritten all caller-saved registers.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "80": {
+    "instruction": "cqo",
+    "why": "Before this second idiv (computing a / GCD), rax = a and rdx must be set to the sign extension of rax. The division a / GCD is exact (no remainder) by definition of GCD, so the quotient fits easily in rax, but rdx must still be valid. Without cqo, a stale value in rdx could make idiv attempt to divide a huge 128-bit number instead of just 'a'.",
+    "doc_url": "https://www.felixcloutier.com/x86/cwd:cdq:cqo"
+  },
+  "81": {
+    "instruction": "idiv    rcx",
+    "why": "This computes a / GCD(a, b), which is the first step in the overflow-safe LCM formula LCM = (a / GCD) * b. Dividing first rather than computing a*b first avoids a potential 64-bit overflow for large inputs. The remainder (in rdx) is theoretically zero because GCD divides a exactly, so we discard rdx and use only rax.",
+    "doc_url": "https://www.felixcloutier.com/x86/idiv"
+  },
+  "82": {
+    "instruction": "imul    rax, r13",
+    "why": "The two-operand imul multiplies rax (= a/GCD) by r13 (= b) and stores the lower 64 bits of the signed result in rax. The result is LCM(a, b) = (a/GCD)*b. By dividing before multiplying, we kept the intermediate value smaller and reduced the chance of overflow compared to computing a*b/GCD. This is the key algorithmic trick the file's header comment describes.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "84": {
+    "instruction": "pop     r13",
+    "why": "Restores the caller's r13 value, fulfilling our callee-save promise. The pop must be in reverse order from the push: r13 was pushed after r12, so it is on top of the stack and must be popped first. Reversing this order would restore the wrong values to r12 and r13.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "85": {
+    "instruction": "pop     r12",
+    "why": "Restores the caller's r12 value. After this pop and the 'pop rbp' inside 'leave' (or an explicit pop), the stack is balanced: the only item remaining is the return address pushed by 'call lcm_pair'. The three pushes (rbp, r12, r13 = 24 bytes) are exactly reversed by three pops before 'ret'.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "104": {
+    "instruction": "push    rbp",
+    "why": "main is called by the C runtime. Saving rbp fulfils the callee-save contract and, together with the 8-byte return address already on the stack, provides the 16-byte base from which 'sub rsp, 528' maintains alignment.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "106": {
+    "instruction": "sub     rsp, 528",
+    "why": "The stack frame must hold N (8 bytes) plus up to 64 array elements (512 bytes), totalling 520 bytes. Rounding up to 528 keeps rsp 16-byte aligned: (return address 8) + (saved rbp 8) + (sub 528) = 544, which is 544 mod 16 = 0. Without this rounding, calls into printf or lcm_pair could fail due to alignment requirements of internal SSE instructions.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "117": {
+    "instruction": "mov     r12, [rbp - 8]",
+    "why": "After reading N via scanf, we cache it in callee-saved r12. In the read loop r12 holds N, but in the lcm fold loop r12 is repurposed to hold the running LCM (line 145). That is why the lcm loop's bound check on line 149 reads N from the stack ([rbp - 8]) rather than from r12 — r12 has been reused by then.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "120": {
+    "instruction": "xor     r13, r13",
+    "why": "'xor r13, r13' zeros the 64-bit register in 3 bytes. The alternative 'mov r13, 0' would require a 64-bit immediate form costing up to 7 bytes, or 'mov r13d, 0' (6 bytes, zero-extended). Beyond code size, modern CPUs treat the xor-self idiom as dependency-breaking: the result does not depend on the old value of r13, enabling earlier scheduling in the out-of-order engine.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "136": {
+    "instruction": "imul    rax, 8",
+    "why": "Each array element is a 64-bit integer (8 bytes), so we multiply the index by 8 to get the byte offset. The two-operand imul with an immediate is the natural idiom for a stride multiply. An alternative is 'shl rax, 3' (left-shift by 3 = multiply by 8), which is one byte shorter, but imul is clearer about the intent: we are computing an array index offset.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "149": {
+    "instruction": "cmp     r13, [rbp - 8]",
+    "why": "By this point in the code, r12 holds the running LCM rather than N, so N must be read from its original stack slot at [rbp - 8]. Reading a 64-bit value directly from memory in the cmp operand saves a register load instruction; the CPU fetches it from the L1 cache with essentially the same latency as a register read. This is a case where keeping N in memory turns out to be the right choice architecturally.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "173": {
+    "instruction": "xor     eax, eax",
+    "why": "Sets main's return value to 0 (success). This comes after the final printf call, so it is purely for the exit-code convention — the variadic float-count was already satisfied by the 'xor eax, eax' before that printf call. Writing to eax (32 bits) implicitly zeroes the upper 32 bits of rax, giving a clean 64-bit zero for the return value.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

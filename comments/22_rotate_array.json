@@ -1,0 +1,97 @@
+{
+  "62": {
+    "instruction": "push rbp",
+    "why": "The ABI requires rbp to be callee-saved. Saving it here is especially important because gcd is called from inside rotate_right_clean, which has already established its own frame pointer. If gcd clobbered rbp without saving it, rotate_right_clean would return to garbage — its entire stack frame would be addressed through a corrupted base pointer.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "63": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Setting rbp to rsp creates the current frame pointer. Even though gcd has no local variables, following this convention lets debuggers follow the rbp chain — each saved rbp points to the caller's frame — to show the exact call path from _start through rotate_right_clean into gcd. The two-instruction overhead is negligible.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "68": {
+    "instruction": "test rsi, rsi",
+    "why": "The Euclidean algorithm terminates when the second argument (b) reaches zero: gcd(a, 0) = a. TEST rsi, rsi sets ZF without modifying rsi itself, so the subsequent JZ can branch without destroying the value we just tested. This is one byte shorter than 'cmp rsi, 0' on 64-bit operands and more idiomatic: the intent is solely to detect zero, not to impose an ordering.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "72": {
+    "instruction": "xor  rdx, rdx",
+    "why": "x86-64 unsigned DIV treats RDX:RAX as a single 128-bit dividend. From the previous loop iteration rdx already holds a remainder value; without zeroing it here, the new dividend would be (old_remainder × 2^64) + rdi, which is astronomically large, producing an incorrect quotient or a #DE divide-overflow fault. Zeroing rdx each iteration isolates the dividend to rdi alone.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "73": {
+    "instruction": "div  rsi",
+    "why": "DIV rsi computes rdi mod rsi — the core step of the Euclidean algorithm. The quotient lands in rax and is discarded; we only need the remainder in rdx, because the recurrence gcd(a, b) = gcd(b, a mod b) replaces the pair with (b, a mod b). Integer modulo on x86 always requires a division instruction; there is no dedicated modulo opcode.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "75": {
+    "instruction": "mov  rdi, rsi",
+    "why": "The Euclidean recurrence replaces (a, b) with (b, a mod b) each iteration. This move implements the first half: the old b (in rsi) becomes the new a (in rdi). Because rsi will be overwritten on the next line to hold the new b, the copy into rdi must happen first — swapping the order would lose the old b value and produce a wrong GCD.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "76": {
+    "instruction": "mov  rsi, rdx",
+    "why": "This completes the substitution: rdx holds a mod b from the DIV instruction above. Moving it into rsi sets the new b. After both moves, (rdi, rsi) = (old b, old a mod b), which is exactly the argument pair for the next recursion step. The entire Euclidean step is implemented in two MOVs with no stack allocation, making it extremely tight in the loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "94": {
+    "instruction": "push rbx",
+    "why": "rbx is callee-saved. rotate_right uses it as the cycle-start index s in the outer loop, a value that must survive the inner loop body and the call to gcd. Saving it on entry means the caller of rotate_right can keep a live value in rbx across this call without protecting it. The five callee-saved registers pushed here (rbx, r12–r15) collectively hold all the loop state needed to span the gcd call.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "95": {
+    "instruction": "push r12",
+    "why": "r12 is callee-saved and will hold the array base pointer across the entire function, including the call to gcd. The call to gcd overwrites rdi and rsi (its argument registers), so the original array pointer passed to rotate_right in rdi cannot simply stay there. Parking it in r12 gives the inner loop a stable, call-persistent home for the array base without any reload from memory.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "111": {
+    "instruction": "mov  r12, rdi",
+    "why": "rdi will be overwritten when we call gcd (which needs n in rdi). Saving the array pointer in the callee-saved register r12 before making that call means we do not need to push it to a local stack slot or reload it from .data. The callee-saved register set (rbx, r12–r15) acts as a small, fast, call-persistent register file for values that need to span multiple inner calls.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "112": {
+    "instruction": "mov  r13, rsi",
+    "why": "rsi holds n here, but the gcd call will use rsi as its own second argument (k). Saving n in the callee-saved r13 allows it to be referenced throughout the function as the array length without reloading from any memory address. r13 also serves as the divisor in all the modulo-n operations inside the cycle loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "113": {
+    "instruction": "mov  r14, rdx",
+    "why": "rdx holds the normalised rotation amount k, but DIV will overwrite rdx with a remainder. Saving k in the callee-saved r14 preserves it across the gcd call and all subsequent divisions in the inner cycle loop, where it is used as the per-step advance in the modular index calculation. Without this save, k would need to be reloaded from a stack slot on every inner-loop iteration.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "119": {
+    "instruction": "mov  r15, rax",
+    "why": "gcd returns its result in rax, but rax is a caller-saved register — the very next instruction (xor rbx, rbx) is free to clobber it. Storing the GCD in the callee-saved r15 keeps it available as the outer-loop bound for the entire cycle traversal without recomputing it each time. The GCD tells us exactly how many independent rotation cycles exist: gcd(n, k).",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "180": {
+    "instruction": "xor  rdx, rdx",
+    "why": "Before dividing by r13 (= n) to normalise k, we must zero rdx because DIV uses RDX:RAX as the 128-bit dividend. k arrives in rdx via the calling convention; its value in rdx is what we want to divide, not its value as the high half of a 128-bit number. Zeroing rdx first makes rax (which holds k) the sole dividend, giving k / n with remainder k mod n.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "181": {
+    "instruction": "div  r13",
+    "why": "A caller may pass k >= n (e.g. rotate by 13 on a 10-element array). Rotating n positions is a no-op, so only k mod n matters. DIV r13 yields the remainder in rdx, which is k mod n, discarding any full rotations. This normalisation also prevents the GCD cycle count from being wrong: gcd(n, k) and gcd(n, k mod n) are equal, so the algorithm stays correct.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "224": {
+    "instruction": "push rax",
+    "why": "rax currently holds the 'travelling value' — the element being displaced around the rotation cycle — which must not be lost. But the upcoming DIV instruction unconditionally overwrites rax with the quotient. Pushing rax to the stack is the minimal way to preserve it across the division without consuming another callee-saved register (all five are already in use for loop state).",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "227": {
+    "instruction": "div  r13",
+    "why": "Each GCD-cycle step jumps k positions forward with wrap-around: next = (current + k) mod n. Integer modulo on x86 requires a division instruction — there is no dedicated MOD opcode. DIV r13 divides RDX:RAX (= 0 : current+k) by n, leaving the remainder in rdx. The quotient in rax is discarded; only rdx (the destination index) is used.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "229": {
+    "instruction": "pop  rax",
+    "why": "This restores the travelling element value that was pushed before the division. After the pop, rax holds the value to place at arr[next], r8 holds the destination index computed by the division, and r12 is the array base — all three are ready for the 'mov [r12 + r8*8], rax' write that deposits the displaced element at its correct rotated position.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "237": {
+    "instruction": "cmp  rcx, rbx",
+    "why": "The GCD cycle starting at position s visits exactly n / gcd(n,k) distinct positions before returning to s. We detect this return by comparing the current position (rcx) to the starting position (rbx). When they are equal, all elements in this cycle are in their final rotated positions and the outer loop can advance to the next cycle start. This is the termination condition the 'jne .rc_inner' branch checks.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "58": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved under the System V AMD64 ABI — any function that uses rbp must save and restore it so the caller's frame pointer is intact on return. The preceding `call` already pushed an 8-byte return address; this push adds 8 more, reaching a 16-byte rsp alignment required before any nested `call`. Omitting this push would corrupt the caller's frame pointer and mislead debuggers that walk the frame-pointer chain.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "59": {
+    "instruction": "mov rbp, rsp",
+    "why": "Copying rsp into rbp records the base of this stack frame at function entry. rbp remains fixed even if rsp is later adjusted by further pushes or a `sub rsp, N`, so frame-relative addresses like [rbp-8] are always valid for the lifetime of the function. This also allows debuggers to compute a stack trace by following the chain of saved rbp values.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "63": {
+    "instruction": "sub rsp, 8",
+    "why": "At this point the stack holds: return address (8) + rbp (8) + rbx (8) + r12 (8) + r13 (8) = 40 bytes, and 40 mod 16 = 8 — misaligned. Subtracting 8 brings the total to 48 bytes (48 mod 16 = 0), satisfying the ABI's requirement that rsp be 16-byte aligned before every `call`. Without this pad, printf may malfunction when it executes SSE/AVX instructions that require aligned stack memory.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "67": {
+    "instruction": "xor rbx, rbx",
+    "why": "`xor reg, reg` is the preferred zero idiom in x86-64: it is 3 bytes versus 7 for `mov rbx, 0`, the CPU treats it as dependency-breaking so it can be issued immediately without waiting on the prior rbx value, and it zeroes all 64 bits. This sets the loop index i to 0 before the first call to printf in the print loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "80": {
+    "instruction": "lea rdi, [rel fmt_ld]",
+    "why": "`lea` with `[rel label]` emits a RIP-relative address computation: the CPU adds the current instruction pointer to a link-time offset, giving the runtime address of the format string regardless of where the executable is loaded. This is essential for position-independent code; an absolute address would break under ASLR or when the file is linked as a shared library. rdi receives the result because printf expects its format string as the first argument.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "85": {
+    "instruction": "xor eax, eax",
+    "why": "printf is variadic, and the System V AMD64 ABI requires AL to contain the count of floating-point arguments in XMM registers before any variadic call. We pass zero floats, so rax must be 0. `xor eax, eax` is the compact idiom: 2 bytes versus 5 for `mov eax, 0`, writing to eax zero-extends into the full 64-bit rax, and the CPU can rename it as a fresh zero with no dependency on the old value.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "98": {
+    "instruction": "add rsp, 8",
+    "why": "This reverses the `sub rsp, 8` padding from the prologue, restoring rsp to the position it held after the four register pushes. The `pop` instructions that follow must find the saved register values at precisely the addresses where they were pushed — if rsp were not advanced first, each pop would read 8 bytes too low on the stack, corrupting r13, r12, rbx, and rbp.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "136": {
+    "instruction": "push r15",
+    "why": "Selection sort needs five persistent variables across the inner scan: arr (r12), n (r13), i (r14), j (rbx), and min_idx (r15). r15 is a callee-saved register, so saving it here lets us use it freely as the minimum-index tracker throughout the function. A caller-saved register like rcx would be overwritten by any function call, but selection_sort makes no calls, so the real constraint is just having enough callee-saved registers to hold all loop variables.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "140": {
+    "instruction": "xor r14, r14",
+    "why": "r14 is the outer position counter i — the index of the slot currently being filled with the minimum. Zeroing it with the `xor` idiom (3 bytes, dependency-breaking) starts the algorithm at the leftmost element, matching `long i = 0;` in the C equivalent. Each pass of the outer loop moves i one position to the right.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "149": {
+    "instruction": "mov r15, r14",
+    "why": "At the start of each outer iteration, selection sort optimistically assumes the minimum element is already at position i. r15 (min_idx) is set to i so the inner scan has a valid starting hypothesis. If the scan finds anything smaller at index j, it will update r15 to j. This initialization avoids a special case for the very first comparison.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "151": {
+    "instruction": "lea rbx, [r14 + 1]",
+    "why": "`lea` performs pure address arithmetic — it computes r14+1 and stores the result in rbx without reading or writing any memory. This sets j = i+1, starting the inner scan one position to the right of i. We never need to compare arr[i] against itself because min_idx is already initialized to i; scanning from i+1 avoids a redundant comparison.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "158": {
+    "instruction": "mov rax, [r12 + rbx*8]",
+    "why": "rax = arr[j]: the current element being considered as a potential new minimum. Scaled-index addressing (`r12 + rbx*8`) computes the byte address in hardware — no separate multiply needed. Both arr[j] and arr[min_idx] are loaded into registers before the compare so the comparison is entirely register-to-register.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "159": {
+    "instruction": "mov rdx, [r12 + r15*8]",
+    "why": "rdx = arr[min_idx]: the value at the current best-minimum position r15. Unlike the bubble-sort inner loop where j+1 is always one past j, here the minimum index r15 is a variable that can point anywhere in the unsorted portion. Loading it explicitly into rdx makes the subsequent `cmp rax, rdx` a register comparison with no memory stall.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "164": {
+    "instruction": "mov r15, rbx",
+    "why": "When arr[j] < arr[min_idx], j becomes the new minimum index. Updating r15 to rbx records this in the callee-saved register that persists across all remaining inner iterations. This is the assembly equivalent of `min_idx = j;` in C — a simple register move rather than a memory write, because min_idx lives entirely in a register.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "171": {
+    "instruction": "cmp r15, r14",
+    "why": "After the inner scan, r15 holds the index of the overall minimum in arr[i..n-1] and r14 holds i. Comparing them answers whether the minimum is already sitting at position i. If r15 == r14, the element is already in the right place and a swap would be a no-op — the `je .ss_next` on the next line skips it, saving two unnecessary memory writes.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "172": {
+    "instruction": "je .ss_next",
+    "why": "Selection sort's defining characteristic is that it performs at most n-1 swaps (one per outer iteration) — far fewer than bubble sort. Skipping the swap when min_idx == i is the mechanism that enforces this: no swap is emitted unless it is truly necessary. This `je` branch makes the skip conditional purely on the flag set by the preceding `cmp`, with no additional overhead.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "175": {
+    "instruction": "mov rax, [r12 + r14*8]",
+    "why": "rax = arr[i]: the value currently occupying the position where the minimum should go. This load is deferred until after confirming that a swap is actually needed (min_idx != i). Having arr[i] in rax and arr[min_idx] in rdx stages both values in registers so the swap only requires two store instructions.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "178": {
+    "instruction": "mov [r12 + r14*8], rdx",
+    "why": "This places the minimum value (rdx = arr[min_idx]) into position i, completing the left side of the swap. Because r14 and r15 are both index registers, the two write addresses `r12 + r14*8` and `r12 + r15*8` can point to any two positions in the array — this is more flexible than bubble sort's adjacent-pair swap, which could hardcode a +8 displacement.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "179": {
+    "instruction": "mov [r12 + r15*8], rax",
+    "why": "This moves the displaced arr[i] value (rax) into the slot where the minimum was found, completing the swap. Together with the preceding store, this achieves `swap(arr[i], arr[min_idx])` using only the two register values already loaded — no temporary memory slot, no additional load instructions.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "196": {
+    "instruction": "push rbp",
+    "why": "The C runtime calls `main` with a `call` instruction, so rbp must be saved and restored here just as in any other function. The return address is already on the stack (8 bytes); this push adds 8 more, placing rsp at a 16-byte boundary so every call inside main — printf, print_array_long, selection_sort — starts with a properly aligned stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "232": {
+    "instruction": "xor eax, eax",
+    "why": "The System V ABI returns integer function results in rax. `main`'s return value is the process exit status; 0 signals success to the shell. `xor eax, eax` zeroes the full 64-bit rax (writing eax zero-extends into rax) in 2 bytes. The shell reads this value via `$?` after the process terminates.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

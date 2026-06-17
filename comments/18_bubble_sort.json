@@ -1,0 +1,107 @@
+{
+  "69": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved: the System V AMD64 ABI requires every function that uses rbp to restore it before returning, so the caller's frame pointer is never silently corrupted. The `call` instruction already pushed an 8-byte return address onto the stack; this push adds another 8 bytes, bringing the total rsp displacement to 16 — satisfying the mandatory 16-byte alignment before any nested `call`. Omitting it would corrupt rbp at the call site and break stack unwinding in debuggers.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "70": {
+    "instruction": "mov rbp, rsp",
+    "why": "This snapshots rsp into rbp to anchor a stable frame base. Frame-relative accesses like [rbp-8] remain valid even after rsp is later moved by further pushes or a `sub rsp, N`, because rbp does not change for the lifetime of this function. Debuggers and OS unwinders follow the chain of saved rbp values to reconstruct a human-readable call stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "71": {
+    "instruction": "push rbx",
+    "why": "rbx is callee-saved: printf is allowed to overwrite any caller-saved register (rdi, rsi, rcx, rdx, r8–r11, rax) but must preserve callee-saved ones (rbx, r12–r15, rbp). We need a loop index that survives every call to printf, so rbx is saved here and reused as the counter i. We must restore it on exit so our caller's rbx is unchanged.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "72": {
+    "instruction": "push r12",
+    "why": "r12 is callee-saved and will hold the array base pointer across all loop iterations. rdi — which carried the array pointer on function entry — is caller-saved and will be overwritten by the first call to printf. Stashing the pointer in r12 before any call ensures every array element access in the loop uses the correct base address.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "73": {
+    "instruction": "push r13",
+    "why": "r13 is callee-saved and will hold the element count n. rsi — which carried n on entry — is caller-saved and will be clobbered by printf. Saving n in r13 means the loop-termination comparison `cmp rbx, r13` always reads the original count without a memory reload or re-pass of the argument.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "74": {
+    "instruction": "sub rsp, 8",
+    "why": "After the return address (8) plus three register pushes (rbp, rbx, r12 = 3×8=24), rsp is 32 bytes below its caller value, but the ABI requires rsp to be divisible by 16 before every `call`. 32 mod 16 = 0, so r13 hasn't been pushed yet — after push r13 we have 40 bytes (40 mod 16 = 8). This final 8-byte pad brings the total to 48 bytes, restoring alignment. Without it, printf may crash when its SSE prologue stores to a misaligned address.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "76": {
+    "instruction": "mov r12, rdi",
+    "why": "This is the fundamental caller-saved-to-callee-saved rescue pattern. rdi is the first argument register and is caller-saved, so printf is permitted to destroy it on its very first call. By copying the array pointer from rdi into r12 (callee-saved) before any call, the base address survives every printf iteration and is still valid when the next element address is computed.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "78": {
+    "instruction": "xor rbx, rbx",
+    "why": "`xor reg, reg` is the canonical x86-64 zero idiom. It encodes in 3 bytes versus 7 for `mov rbx, 0`; modern CPUs recognize it as a dependency-breaking zeroing operation and can schedule it out-of-order without waiting for the old rbx value; and, as with all 64-bit writes, it clears the full register. This sets the loop index i to 0 before the first iteration.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "84": {
+    "instruction": "mov rsi, [r12 + rbx*8]",
+    "why": "The `[base + index*scale]` addressing mode computes r12 + rbx×8 in hardware in a single instruction — no separate multiply or add needed. The scale of 8 matches the element size (8 bytes per `long long`), so `rbx*8` is the correct byte offset for element index rbx. The result lands in rsi because the System V ABI passes the second function argument (the integer value for `%ld`) in rsi.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "91": {
+    "instruction": "lea rdi, [rel fmt_ld]",
+    "why": "`lea` with `[rel label]` computes the runtime address of `fmt_ld` using RIP-relative addressing — the CPU adds the instruction-pointer value to a link-time offset, so the address is valid regardless of where the executable is loaded in memory. Without `rel`, NASM emits an absolute 64-bit address that breaks position-independent executables and shared libraries. rdi receives the address because it is the first argument register, and printf expects the format string there.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "96": {
+    "instruction": "xor eax, eax",
+    "why": "printf is variadic. The System V AMD64 ABI requires AL to hold the count of floating-point arguments passed in XMM registers before any variadic call. We pass zero float args, so rax must be 0. `xor eax, eax` achieves this in 2 bytes (versus 5 for `mov eax, 0`), writing to eax automatically zeroes the upper 32 bits of rax, and CPUs treat it as a dependency-breaking zero with no false stall on the old rax.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "109": {
+    "instruction": "add rsp, 8",
+    "why": "This undoes the `sub rsp, 8` from the prologue, returning rsp to the position it held just after the four register pushes. The subsequent `pop` instructions rely on finding their saved values at exact stack addresses — if rsp were still 8 bytes too low, each pop would read from the wrong location, restoring garbage into r13, r12, rbx, and rbp before the `ret`.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "159": {
+    "instruction": "xor r14, r14",
+    "why": "r14 is the outer-pass counter i in bubble_sort, and it must start at 0 before the first pass. `xor r14, r14` is the zero idiom in 64-bit form (3 bytes), breaking any false dependency on r14's previous value. In C terms this is `long i = 0;` — the starting condition before the outer `for` loop that counts completed passes.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "169": {
+    "instruction": "dec rcx",
+    "why": "After `sub rcx, r14` rcx = n-i, the count of unsorted elements. The inner loop inspects adjacent pairs (arr[j], arr[j+1]), so j must stop at the second-to-last unsorted element — index n-i-2 — meaning j's exclusive upper bound is n-i-1. This decrement produces that bound. Without it, the inner loop would compare arr[n-i-1] with arr[n-i], reading one element past the end of the array.",
+    "doc_url": "https://www.felixcloutier.com/x86/dec"
+  },
+  "178": {
+    "instruction": "mov rdx, [r12 + rbx*8 + 8]",
+    "why": "Adding a displacement of 8 to `r12 + rbx*8` is equivalent to using index j+1 because each element is 8 bytes wide. Loading arr[j+1] into rdx before the comparison stages both values in registers simultaneously, so the subsequent conditional swap can complete with two store instructions and zero additional loads — keeping memory traffic minimal.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "183": {
+    "instruction": "cmp rax, rdx",
+    "why": "`cmp` computes rax − rdx and updates the CPU flags (SF, ZF, OF, CF) based on the result, then discards the difference. The immediately following `jle` reads those flags to decide whether to skip the swap. There is no single x86 compare-and-branch instruction; this two-instruction sequence is the canonical pattern for every conditional decision in assembly.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "188": {
+    "instruction": "mov [r12 + rbx*8], rdx",
+    "why": "This is the first of two writes that complete the swap. rax already holds old arr[j] and rdx holds old arr[j+1] from the loads before the compare, so no extra temporary register is needed — the two values are already 'staged' in registers. Writing rdx (the right, larger element) to arr[j] moves it toward the sorted tail of the array.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "189": {
+    "instruction": "mov [r12 + rbx*8 + 8], rax",
+    "why": "This is the second write of the swap. rax still holds the original arr[j] (smaller element) from the load before the compare, so writing it to arr[j+1] finishes the exchange. This mirrors the C idiom `int tmp = a; a = b; b = tmp;` except the 'tmp' was a register that was already live, not a newly allocated variable.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "210": {
+    "instruction": "push rbp",
+    "why": "Even in `main`, rbp is callee-saved and must be preserved for the C runtime that calls `main`. The `call main` instruction pushed an 8-byte return address; this push adds 8 more, aligning rsp to 16 bytes before any `call` inside main. Any function called from main — including printf — may inspect or use rbp; if main skipped this push, rbp at the call site would be silently corrupted.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "219": {
+    "instruction": "xor eax, eax",
+    "why": "This clears AL immediately before a variadic call to printf, signaling that zero XMM registers carry floating-point arguments. It must be repeated before every variadic call because the preceding call to print_array_long (which itself called printf) may have left a nonzero value in rax. The ABI gives no guarantee about rax between function calls.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "246": {
+    "instruction": "xor eax, eax",
+    "why": "The System V ABI returns integer values in rax. `main` must return an exit status to the OS; 0 means success. Writing to eax zeroes the upper 32 bits of rax automatically (the x86-64 zero-extension rule for 32-bit writes), so `xor eax, eax` sets rax = 0 in 2 bytes. The shell checks this value via `$?` after the process exits.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

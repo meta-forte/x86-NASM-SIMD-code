@@ -1,0 +1,77 @@
+{
+  "55": {
+    "instruction": "push rbp",
+    "why": "Saves the caller's frame pointer as required by the callee-save ABI contract. array_sum_i32 may be called from C (rdi/rsi are the standard argument registers, and rax holds the return value, exactly matching the C prototype). Any C caller that uses rbp itself (e.g. with -fno-omit-frame-pointer) would be silently corrupted if this function skipped the save. The push also restores 16-byte stack alignment after the 8-byte return address pushed by the 'call' instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "56": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Anchors the stack frame. array_sum_i32 has no local variables, so this is primarily for debuggability: gdb and profilers like perf follow the chain of saved rbp values to reconstruct the call stack. Without it, any backtrace captured while inside this function would show '??' for all frames above it. It is also good engineering discipline before adding local variables in future edits.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "58": {
+    "instruction": "xor  rax, rax",
+    "why": "Zeroes the 64-bit accumulator. The ABI specifies that the function return value is in rax, so using rax directly as the running sum means the result is already in the right register when 'ret' executes — no final move needed. XOR-self is preferred over 'mov rax, 0' because it is 3 bytes shorter (REX + opcode + ModRM vs REX + opcode + ModRM + 4-byte immediate) and is recognised by the CPU as a zero idiom that breaks false dependencies.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "59": {
+    "instruction": "test rsi, rsi",
+    "why": "Tests whether the element count (rsi) is zero before entering any loop. TEST computes rsi AND rsi and sets ZF without writing to any register or clobbering rsi, which is still needed later as the loop bound stored in rcx. 'cmp rsi, 0' would be an equivalent alternative, but TEST is one byte shorter in the 64-bit register-register form and is the idiomatic early-exit guard for count parameters.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "68": {
+    "instruction": "shr  r8, 2",
+    "why": "Computes the number of complete 4-element groups by dividing the total count by 4 via a logical right shift. SHR by 2 is a 1-cycle operation vs a multi-cycle DIV, and it is exact for unsigned counts. This value drives the unrolled loop counter; the remainder (count & 3) is handled by the tail loop. The pattern 'shr count, log2(unroll_factor)' is the standard loop-unroll bookkeeping idiom in both hand-written assembly and compiler output.",
+    "doc_url": "https://www.felixcloutier.com/x86/sal:sar:shl:shr"
+  },
+  "76": {
+    "instruction": "movsxd r9,  dword [rdi + rdx*4 + 0]",
+    "why": "MOVSXD ('Move with Sign-Extension Doubleword to Quadword') loads a 32-bit signed integer from memory and sign-extends it to 64 bits before adding it to the 64-bit accumulator rax. Without this sign extension, a negative int32 value like -3 (0xFFFFFFFD) would be zero-extended to 0x00000000FFFFFFFD (4294967293) and add a huge positive number to the sum instead of subtracting 3. This is the central correctness requirement whenever you accumulate signed 32-bit data into a 64-bit total.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "79": {
+    "instruction": "movsxd r9,  dword [rdi + rdx*4 + 4]",
+    "why": "The second of four unrolled MOVSXD loads in one iteration. Unrolling by 4 means the CPU's out-of-order engine can issue all four loads simultaneously (subject to memory-level parallelism), hiding L1-cache latency. Four independent MOVSXD + ADD chains have no data dependency between them until the final four ADD instructions, so the processor can overlap their execution. A single-element loop would stall on the accumulator dependency every iteration.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "88": {
+    "instruction": "add    rdx, 4",
+    "why": "Advances the element index by 4 after each unrolled iteration. The SIB addressing 'rdi + rdx*4' uses rdx as a scaled index, so incrementing rdx by 4 moves the effective address by 4*4 = 16 bytes — exactly the stride of one four-element group. Keeping rdx as an element count (rather than a byte offset) makes the tail-loop comparison 'cmp rdx, rcx' a direct element count comparison without an extra shift.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "89": {
+    "instruction": "dec    r8",
+    "why": "Decrements the group counter and sets the Zero Flag if r8 reaches 0. The following JNZ branches back to the loop top only when r8 != 0, exiting as soon as all full groups of 4 are consumed. DEC+JNZ is the classic loop-counter pattern; the CPU fuses them into a single macro-op on modern Intel and AMD cores, removing a branch prediction slot from the critical path.",
+    "doc_url": "https://www.felixcloutier.com/x86/dec"
+  },
+  "100": {
+    "instruction": "movsxd r9, dword [rdi + rdx*4]",
+    "why": "The tail loop processes the remaining (count % 4) elements that were not covered by the unrolled main loop. Sign-extension is equally necessary here: the final elements of the array may include negative values. Omitting MOVSXD in the tail but using it in the main loop would produce wrong results for arrays whose length is not a multiple of 4 and whose tail contains negative integers.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "129": {
+    "instruction": "test rdi, rdi",
+    "why": "Checks whether the input number is negative by inspecting the sign flag after AND-self. If SF is set (number < 0), we negate it and set the sign flag r13 to remember we must prepend '-' later. TEST is used rather than 'cmp rdi, 0' because it does not write to any register and avoids any ambiguity about whether the compare might leave rdi modified; it is the idiomatic 'is this signed integer negative?' check.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "144": {
+    "instruction": "xor  rdx, rdx",
+    "why": "The DIV instruction (unsigned division) uses rdx:rax as a 128-bit dividend. If rdx is non-zero, the quotient may overflow or produce a wrong result. Zeroing rdx before each DIV is mandatory: without it, leftover garbage in rdx (e.g., from the previous loop iteration) would make DIV interpret rax as only the low half of a huge 128-bit number, producing a wrong quotient and possibly raising a divide exception (#DE) if the quotient doesn't fit in rax.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "146": {
+    "instruction": "div  rcx",
+    "why": "Divides rdx:rax by rcx (10), leaving the quotient in rax and the remainder (the current least-significant decimal digit) in rdx. DIV is used instead of repeated subtraction because extracting digits one-at-a-time from the bottom of the number is the standard O(log10 n) approach. The remainder dl is immediately converted to ASCII by adding '0' and stored in the buffer. After all digits are extracted (rax == 0), the buffer is reversed to produce the correct left-to-right decimal string.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  },
+  "252": {
+    "instruction": "mov  rax, 60",
+    "why": "Sets up the Linux exit() system call. On x86-64 Linux, the syscall number goes in rax; 60 is the number for exit(). The kernel dispatches based on rax when the SYSCALL instruction is executed. Unlike the C library's exit(), this syscall bypasses C runtime cleanup (atexit handlers, stdio buffer flushing), which is acceptable in a standalone _start program that has no C runtime.",
+    "doc_url": "https://www.felixcloutier.com/x86/syscall"
+  },
+  "253": {
+    "instruction": "xor  rdi, rdi",
+    "why": "Sets the exit code to 0 (success) for the Linux exit() syscall. POSIX convention is that exit code 0 means the program completed without error; the shell reads this via '$?'. XOR-self is 3 bytes vs 7 bytes for 'mov rdi, 0' and is recognised by the CPU as a dependency-breaking zero idiom, which is useful here immediately after potentially complex arithmetic that may have left rdi in an unknown state.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

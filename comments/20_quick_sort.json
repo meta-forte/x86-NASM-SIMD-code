@@ -1,0 +1,107 @@
+{
+  "65": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved under the System V AMD64 ABI. The `call` to this function pushed an 8-byte return address; this push adds 8 more bytes, maintaining 16-byte rsp alignment before the first nested `call printf`. Without saving rbp, the caller's frame pointer would be silently corrupted and stack unwinding would fail.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "70": {
+    "instruction": "sub rsp, 8",
+    "why": "After push rbp, push rbx, push r12, push r13 (4×8 = 32 bytes) plus the return address (8 bytes) the stack holds 40 bytes of adjustments; 40 mod 16 = 8, so rsp is misaligned. This 8-byte subtraction brings the total to 48 bytes (48 mod 16 = 0), fulfilling the ABI requirement that rsp be 16-byte aligned before every `call printf`.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "92": {
+    "instruction": "xor eax, eax",
+    "why": "printf is variadic and the System V AMD64 ABI requires AL to contain the count of floating-point arguments in XMM registers. We pass zero floats, so rax must be 0 before every `call printf`. `xor eax, eax` is the compact 2-byte idiom; it zeroes all of rax (writing eax zero-extends into rax) and is dependency-breaking, unlike `mov eax, 0` which encodes in 5 bytes.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "168": {
+    "instruction": "mov r8, [rdi + rdx*8]",
+    "why": "This loads the pivot value from arr[hi] once and keeps it in r8 for the entire scan loop. r8 is a caller-saved register, which is fine here because partition makes no function calls. Caching the pivot in a register avoids re-reading arr[hi] from memory on every iteration of .part_loop — the CPU's load-use latency would otherwise penalize every comparison.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "177": {
+    "instruction": "dec rcx",
+    "why": "The Lomuto scheme initializes `i = lo - 1` to mean 'no element has been confirmed ≤ pivot yet'. After `mov rcx, rsi` copies lo into rcx, decrementing by 1 places i one position before the subarray, making it a sentinel. The first time an element ≤ pivot is found, `inc rcx` advances i to lo, pointing at the first real slot of the left partition.",
+    "doc_url": "https://www.felixcloutier.com/x86/dec"
+  },
+  "182": {
+    "instruction": "mov r9, rsi",
+    "why": "r9 is the scan index j, which starts at lo (rsi). r9 is a caller-saved scratch register; partition makes no calls, so it is safe to use here without pushing. Keeping lo in rsi unchanged and copying it into r9 means the original lo value is still available if needed, and j can advance independently as the scan progresses.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "187": {
+    "instruction": "jge .part_done",
+    "why": "The scan loop processes elements arr[lo..hi-1]; the pivot at arr[hi] must not be compared against itself. Jumping when j ≥ hi (rather than j > hi-1) means the pivot is excluded from the scan. After the loop the pivot is placed by a separate swap, so its exclusion from the scan is by design, not an omission.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "195": {
+    "instruction": "cmp rax, r8",
+    "why": "This compares the current element arr[j] (in rax) against the pivot (in r8). The result determines whether arr[j] belongs in the left partition (≤ pivot) or the right partition (> pivot). `cmp` sets the CPU flags from `rax − r8` without storing the difference; the following `jg .part_no_swap` reads those flags to skip the partition swap when arr[j] is larger than the pivot.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "200": {
+    "instruction": "inc rcx",
+    "why": "i is the boundary of the confirmed left partition — all elements at indices ≤ i are ≤ pivot. Incrementing i before the swap expands the left-partition boundary by one slot, making room for arr[j] (which we just confirmed is ≤ pivot). The swap that follows then moves arr[j] into that newly claimed slot.",
+    "doc_url": "https://www.felixcloutier.com/x86/inc"
+  },
+  "203": {
+    "instruction": "mov r10, [rdi + rcx*8]",
+    "why": "r10 is the temporary in the three-move swap of arr[i] and arr[j]. It saves the current value at arr[i] (the boundary slot) before arr[j] overwrites it. Without this save, the value at arr[i] would be lost. In C this is the `tmp` in `tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;`.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "227": {
+    "instruction": "inc rcx",
+    "why": "After the scan loop, rcx = i (the last index of the confirmed left partition). The pivot's correct sorted position is i+1 — the slot immediately to the right of all elements ≤ pivot. Incrementing rcx once establishes this target index. The two stores that follow swap arr[i+1] (whatever is there now) with arr[hi] (the pivot), permanently placing the pivot.",
+    "doc_url": "https://www.felixcloutier.com/x86/inc"
+  },
+  "245": {
+    "instruction": "mov rax, rcx",
+    "why": "The System V ABI returns integer results in rax. rcx now holds i+1, the final sorted index of the pivot — the value that quicksort needs to split the array into two independent recursive subproblems. Moving rcx into rax delivers this return value without a memory store, and rcx is left unchanged for any cleanup needed before `ret`.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "292": {
+    "instruction": "push rbp",
+    "why": "quicksort is recursive, so every invocation must be a proper function with a saved frame pointer. The `call quicksort` instruction pushed an 8-byte return address; this push begins building the callee-save block. Saving rbp also ensures that the frame-pointer chain is intact across all recursive depths, which debuggers and profilers depend on to show a useful call stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "297": {
+    "instruction": "push r15",
+    "why": "quicksort needs four persistent values across two recursive calls: arr (r12), lo (r13), hi (r14), and the pivot index p (r15). All four are callee-saved, so each recursive level pushes them onto the stack and pops them on return, giving every level its own private copies. r15 in particular holds p after partition returns so that both recursive calls can compute `p-1` and `p+1` without re-calling partition.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "301": {
+    "instruction": "mov r12, rdi",
+    "why": "rdi (arr) is a caller-saved register that will be overwritten by the first `call partition`. Copying it into the callee-saved r12 means the array base pointer survives partition and both recursive calls to quicksort unchanged. Every recursive level of quicksort sorts the same underlying array; they differ only in lo and hi, so sharing the same r12 across levels would be wrong — each level saves its own copy on the stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "305": {
+    "instruction": "cmp r13, r14",
+    "why": "This implements the base case check `lo >= hi`. A subarray with zero elements (lo > hi, which can happen when p == lo and the left call becomes quicksort(arr, lo, lo-1)) or one element (lo == hi) is already sorted by definition. The signed comparison correctly handles the lo > hi case even when lo-1 wraps to a large positive value when lo is 0 — but in practice lo-1 is just -1, which is less than lo=0 in signed arithmetic, so jge fires.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "306": {
+    "instruction": "jge .qs_done",
+    "why": "This is the recursive base case exit. Returning immediately when lo >= hi prevents infinite recursion: after partitioning, the left call receives hi = p-1 and the right call receives lo = p+1; when p is at the edge of the subarray, one of those calls will have lo > hi and must return without doing any work. A missing base case would recurse forever and overflow the stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "324": {
+    "instruction": "mov r15, rax",
+    "why": "partition returns the pivot's final index in rax (a caller-saved register that the next `call quicksort` will overwrite immediately). Saving it in r15 (callee-saved) lets both recursive calls reference p — to compute p-1 for the left boundary and p+1 for the right boundary — without needing to call partition a second time or spill p to memory.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "329": {
+    "instruction": "lea rdx, [r15 - 1]",
+    "why": "`lea` with `[r15 - 1]` performs pure arithmetic — it computes p-1 and stores it in rdx without touching memory. This is the hi argument for the left recursive call: sort arr[lo..p-1]. Using `lea` avoids a `mov rdx, r15; dec rdx` two-instruction sequence and leaves r15 (p) unchanged for the right recursive call that follows.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "337": {
+    "instruction": "lea rsi, [r15 + 1]",
+    "why": "`lea` computes p+1 and stores it in rsi without touching memory or modifying r15. This is the lo argument for the right recursive call: sort arr[p+1..hi]. The pivot at index p is permanently placed after partition and must not be included in either recursive subproblem — starting the right half at p+1 enforces this boundary.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "390": {
+    "instruction": "xor eax, eax",
+    "why": "The System V ABI returns integer results in rax. `main` returns the process exit status; 0 means success. `xor eax, eax` sets rax to 0 in 2 bytes (writing eax zero-extends into the full 64-bit rax) before the final `ret`, which pops the return address and hands control back to the C runtime, which then calls `exit(rax)`.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

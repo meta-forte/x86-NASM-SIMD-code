@@ -1,0 +1,67 @@
+{
+  "93": {
+    "instruction": "push rbp",
+    "why": "The System V AMD64 ABI requires rbp to be callee-saved. Pushing it here saves the caller's frame pointer so we can restore it before returning, keeping rbp unchanged from the caller's perspective and maintaining the linked list of frame pointers that debuggers use to unwind the call stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "94": {
+    "instruction": "mov  rbp, rsp",
+    "why": "After saving the old rbp, we snapshot rsp into rbp to establish a stable frame pointer for this activation record. This lets tools like gdb display a readable backtrace even though rsp changes later, and is standard C calling-convention practice.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "96": {
+    "instruction": "mov  rax, rdi",
+    "why": "The one-operand MUL instruction is hardwired to multiply rax by its explicit operand and place the 128-bit result in rdx:rax. There is no way to tell MUL to use rdi as the implicit multiplicand — it always reads rax. We must therefore copy n from rdi (where the ABI placed it) into rax before invoking MUL.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "97": {
+    "instruction": "mul  qword [magic7]",
+    "why": "MUL performs a full 128-bit unsigned multiply of rax by the magic number M, placing the high 64 bits in rdx and the low 64 bits in rax. We only care about rdx — the high half — because 'mulhi(n, M)' is the approximation of n/7. Choosing M = 0x2492492492492493 exploits the reciprocal approximation: M/2^66 ≈ 1/7, so the top bits of n*M encode the quotient.",
+    "doc_url": "https://www.felixcloutier.com/x86/mul"
+  },
+  "103": {
+    "instruction": "sub  rdi, rdx",
+    "why": "For divisor 7, the magic number 0x2492492492492493 is one unit-in-the-last-place larger than the exact reciprocal, which can cause mulhi to overshoot the true quotient by 1. The correction formula ((n - mulhi) >> 1) + mulhi) >> 2 averages n and mulhi before the final shift, bringing the result back within rounding distance of the true quotient. This line computes n - mulhi as the first step.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "104": {
+    "instruction": "shr  rdi, 1",
+    "why": "This right-shifts (n - mulhi) by 1, computing (n - mulhi)/2 as an unsigned shift. The averaging step (n - mulhi)/2 + mulhi is mathematically equivalent to (n + mulhi)/2, but it avoids any possible overflow in the intermediate addition because n and mulhi are both close to 2^64 for large inputs.",
+    "doc_url": "https://www.felixcloutier.com/x86/shr"
+  },
+  "105": {
+    "instruction": "add  rdx, rdi",
+    "why": "Adds (n - mulhi)/2 back to mulhi, producing the averaged intermediate value (n + mulhi)/2. This particular averaging trick, described in Hacker's Delight chapter 10, handles the single carry bit that would otherwise escape a direct (n + mulhi) computation when both values are near 2^64.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "106": {
+    "instruction": "shr  rdx, 2",
+    "why": "The final post-shift extracts the actual quotient from the averaged intermediate. The magic number and averaging together arranged that the result, after shifting right by (shift = 2), equals floor(n / 7) exactly for all 64-bit unsigned n. The specific shift amount (2 for divisor 7) is derived at compile time from the reciprocal's binary fraction and is a fixed constant per divisor.",
+    "doc_url": "https://www.felixcloutier.com/x86/shr"
+  },
+  "126": {
+    "instruction": "mov  rax, rdi",
+    "why": "Same reason as line 96: the MUL instruction is hard-wired to use rax as the implicit left operand. n arrives in rdi per the calling convention, so we must move it to rax before executing MUL to multiply n by the magic constant for divisor 10.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "127": {
+    "instruction": "mul  qword [magic10]",
+    "why": "Computes the full 128-bit product n * 0xCCCCCCCCCCCCCCCD, placing the upper 64 bits in rdx. The magic number for divisor 10 was chosen so that rdx already equals the true quotient after just one right shift (shift = 3), unlike divisor 7 which needed the averaging correction. This is because 0xCCCC.../2^67 approximates 1/10 closely enough that no round-up correction is required.",
+    "doc_url": "https://www.felixcloutier.com/x86/mul"
+  },
+  "130": {
+    "instruction": "shr  rdx, 3",
+    "why": "For divisor 10, the magic-number method requires only a single post-shift of 3 bits (dividing rdx by 8) to extract the exact quotient floor(n/10). No averaging step is needed because the magic 0xCCCCCCCCCCCCCCCD rounds up just enough that the high half of the product, after shifting by 3, falls precisely on the true quotient for all 64-bit unsigned inputs.",
+    "doc_url": "https://www.felixcloutier.com/x86/shr"
+  },
+  "149": {
+    "instruction": "xor  rdx, rdx",
+    "why": "The DIV instruction treats rdx:rax as a single 128-bit unsigned dividend. If rdx is non-zero (leftover from a previous computation), DIV would divide a huge 128-bit number rather than the intended 64-bit value n, almost certainly triggering a divide-overflow fault (#DE). Zeroing rdx ensures the dividend is exactly n (64 bits), padded with zeros in the high half.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "151": {
+    "instruction": "div  rcx",
+    "why": "This is the reference division using the actual hardware DIV instruction, included here only for correctness comparison. DIV is accurate but costs 20-90 cycles on modern CPUs — roughly 15-30x slower than the magic-number multiply path. Compilers replace constant divisions with the magic-multiply sequence precisely to avoid this cost on the hot path.",
+    "doc_url": "https://www.felixcloutier.com/x86/div"
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "88": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved under the System V AMD64 ABI — every function that modifies rbp must restore it before returning, or the caller's frame pointer is silently corrupted. The push here serves double duty in bswap32_buf: when main calls this function with 'call bswap32_buf', the return address is pushed (8 bytes), leaving rsp at 8 mod 16. This push adds another 8 bytes, restoring 16-byte alignment — mandatory before any subsequent 'call' instruction. Although bswap32_buf itself does not call anything, the discipline is correct and uniform.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "89": {
+    "instruction": "mov  rbp, rsp",
+    "why": "rsp is a moving target — it shifts on every push, pop, and call. Copying it into rbp creates a stable anchor for the duration of this function. Local variables and saved registers can always be reached as fixed offsets from rbp (e.g. [rbp-8], [rbp-16]) even after rsp has moved. Debuggers such as gdb use this rbp chain to unwind the call stack: each frame's saved rbp links back to the previous frame.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "91": {
+    "instruction": "xor  rcx, rcx",
+    "why": "This zeroes rcx for use as the array index. On x86-64, writing to a 32-bit register (like ecx) implicitly zeroes the upper 32 bits of the full 64-bit register. 'xor ecx, ecx' (which assembles to 2 bytes) or 'xor rcx, rcx' (3 bytes) is preferred over 'mov rcx, 0' (7 bytes for a 64-bit immediate) because modern CPUs recognise it as a zero-idiom and can eliminate the dependency on the previous value of rcx, breaking false data-dependency chains.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "98": {
+    "instruction": "bswap eax",
+    "why": "BSWAP reverses all 4 bytes of a 32-bit register in a single clock cycle: byte 0 swaps with byte 3, byte 1 swaps with byte 2. The alternative — four shifts and three ORs — takes at least 7 instructions and creates a dependency chain. BSWAP is the correct tool for converting between little-endian (x86 native) and big-endian (network byte order, JPEG markers, PNG chunks) in scalar code. For 64-bit values, 'bswap rax' does the same across all 8 bytes.",
+    "doc_url": "https://www.felixcloutier.com/x86/bswap"
+  },
+  "106": {
+    "instruction": "pop  rbp",
+    "why": "This undoes the 'push rbp' from the prologue and is the pair that keeps the stack balanced. After this pop, rsp points exactly at the 8-byte return address that 'call bswap32_buf' pushed. The subsequent 'ret' pops that address and jumps to it. If the push and pop were ever mismatched — say an extra push without a pop — ret would jump to garbage and the process would crash.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "122": {
+    "instruction": "movdqu xmm0, [rdi]",
+    "why": "MOVDQU ('Move Unaligned Double Quadword') loads 16 bytes into an XMM register without requiring any particular alignment of the source address. We use the unaligned variant here because the caller's buffer (rdi) was declared in .bss and we have not guaranteed 16-byte alignment for it. Using MOVDQA on a misaligned address raises a general-protection fault (#GP). The performance cost of MOVDQU on modern processors is negligible when the address happens to be aligned anyway.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu:vmovdqu8:vmovdqu16:vmovdqu32:vmovdqu64"
+  },
+  "124": {
+    "instruction": "movdqa xmm1, [shuf32_mask]",
+    "why": "MOVDQA ('Move Aligned Double Quadword') is safe here because the shuffle mask is declared in .data immediately after 'align 16', guaranteeing 16-byte alignment at link time. We choose MOVDQA for the mask load specifically because it is a static constant that we control — we know it is aligned. MOVDQA faults loudly on misalignment rather than silently reading wrong data, which is the preferred behavior for a constant whose address is fixed at assemble time.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqa:vmovdqa32:vmovdqa64"
+  },
+  "127": {
+    "instruction": "pshufb xmm0, xmm1",
+    "why": "PSHUFB (SSSE3 'Packed Shuffle Bytes') rearranges all 16 bytes of xmm0 in one instruction based on the index table in xmm1. Without it, reversing four 32-bit words would require loading each byte individually, repositioning it, and merging — roughly 20+ instructions per register. PSHUFB is also entirely branch-free and has one-cycle throughput. The mask in xmm1 encodes [3,2,1,0, 7,6,5,4, 11,10,9,8, 15,14,13,12], which mirrors each 4-byte group independently — exactly what endian-swap of four dwords needs.",
+    "doc_url": "https://www.felixcloutier.com/x86/pshufb"
+  },
+  "132": {
+    "instruction": "movdqu [rsi], xmm0",
+    "why": "We store the result with the unaligned variant because the output buffer pointer (rsi) is not guaranteed to be 16-byte aligned from the caller's perspective. The swap has already happened inside xmm0; this instruction just commits those 16 bytes to memory. If the destination were guaranteed aligned, MOVDQA would be slightly preferred to let the hardware signal any alignment bugs early.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu:vmovdqu8:vmovdqu16:vmovdqu32:vmovdqu64"
+  },
+  "150": {
+    "instruction": "bswap rax",
+    "why": "The 64-bit form of BSWAP reverses all 8 bytes of rax in one instruction: byte 7 swaps with byte 0, byte 6 with byte 1, and so on. This is the canonical way to convert a 64-bit integer between host (little-endian) byte order and network/big-endian order. The alternative would be eight byte extractions via shift-and-OR, creating a long dependency chain and using many more instruction bytes. BSWAP on a 64-bit register requires a REX.W prefix (making the encoding 2 bytes instead of 1), but the latency is still just 1–3 cycles on all modern Intel and AMD microarchitectures.",
+    "doc_url": "https://www.felixcloutier.com/x86/bswap"
+  },
+  "165": {
+    "instruction": "push rbx",
+    "why": "rbx is callee-saved and print_hex32 uses it as the digit counter. Saving it here guarantees that whatever value the caller stored in rbx before invoking print_hex32 will be intact after the function returns. In _start, rbx is used as the outer loop index for printing arrays, so corrupting it would silently advance or skip loop iterations.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "166": {
+    "instruction": "push r12",
+    "why": "r12 through r15 are callee-saved by the ABI and are ideal for holding pointers across nested calls. Here r12 holds the address of the num_buf scratch buffer. Using a callee-saved register means that any functions called inside print_hex32 (such as the syscall path) cannot disturb r12, so the buffer address remains valid throughout the entire formatting loop without needing to be reloaded from memory.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "171": {
+    "instruction": "movzx rdi, edi",
+    "why": "On x86-64, a 32-bit write to a register (e.g. edi from a 32-bit argument) implicitly zeroes bits 32-63, so this is technically a no-op in this calling convention. It is written explicitly to document intent: we want a 64-bit zero-extended value so that subsequent 64-bit arithmetic (shifts, indexing) treats the number as unsigned rather than potentially sign-extending a negative 32-bit value into the upper half. MOVZX is the safe, self-documenting way to widen unsigned quantities.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "290": {
+    "instruction": "xor  rbx, rbx",
+    "why": "rbx is reused as the array loop index after each function call. Zeroing it with XOR before each traversal ensures we start from element 0 regardless of whatever value a prior call to print_hex32 or bswap32_buf may have left in rbx. XOR-self is the canonical zero idiom: smaller encoding than MOV, recognized by the CPU as dependency-breaking, and implicitly clears all 64 bits.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "385": {
+    "instruction": "xor  rdi, rdi",
+    "why": "The Linux exit() syscall (number 60 in rax) reads the exit code from rdi. Zero means success by POSIX convention; the shell makes it visible via '$?'. XOR-self is used rather than 'mov rdi, 0' for the same reasons as xor-self on any register: 2-byte encoding vs 7, and it clears all 64 bits via the implicit zero-extension rule when written as 'xor edi, edi'. The kernel ignores everything above the low 8 bits of rdi anyway, but the idiom is consistent.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}

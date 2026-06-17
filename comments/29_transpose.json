@@ -1,0 +1,102 @@
+{
+  "48": {
+    "instruction": "push    rbp",
+    "why": "read_n is a thin wrapper that calls scanf, but the ABI still requires rbp to be callee-saved. Pushing it here also participates in alignment: on entry rsp is 8-byte misaligned (from the call instruction's return-address push), so push + pop creates a symmetric +8/-8 adjustment, keeping rsp correctly aligned when scanf is called.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "49": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Establishes a frame pointer for read_n. Although there are no locals, this lets debuggers correctly identify the function boundary when unwinding the call stack. Without it, a stack trace through read_n into scanf would appear as a single merged frame, making it harder to diagnose argument-passing bugs.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "50": {
+    "instruction": "xor     eax, eax",
+    "why": "scanf is variadic; the System V AMD64 ABI requires AL to hold the count of XMM floating-point arguments before any variadic call. We pass zero floats, so eax must be 0. 'xor eax, eax' is the canonical zero idiom: 2 bytes vs 5 for 'mov eax, 0', implicitly zeroes all of rax above bit 31, and allows the CPU to break any false output dependency on eax's previous value.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "63": {
+    "instruction": "push    r12",
+    "why": "print_matrix uses r12 through r15 as its four loop variables (matrix base pointer, N, row index, col index). The System V ABI designates r12-r15 as callee-saved, so print_matrix must push all four at entry and pop them at exit. Using callee-saved registers for the loop variables means main never needs to spill and reload N or the matrix pointers around the call to print_matrix.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "69": {
+    "instruction": "mov     r12, rdi",
+    "why": "rdi (first argument = matrix base pointer) is caller-saved and will be destroyed by the first call to printf inside the print loop. Moving it to callee-saved r12 before any loop iteration ensures the matrix pointer survives every inner printf call. If left in rdi, the pointer would be trashed on the first element print, and all subsequent element-address calculations would use garbage.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "70": {
+    "instruction": "mov     r13d, esi",
+    "why": "esi holds N (the matrix dimension, a 32-bit integer). Writing to a 32-bit register destination implicitly zero-extends to the full 64-bit r13, so no 'movzx' is needed for a non-negative value. Storing N in r13d keeps it in a callee-saved register throughout the loops and ensures the 32-bit loop comparisons ('cmp r14d, r13d') stay at 32-bit width, matching the 32-bit induction variables r14d and r15d.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "86": {
+    "instruction": "imul    eax, r13d",
+    "why": "This computes row * N, the row's starting flat index in the row-major array. 32-bit operands are correct because N <= 8 and row <= 7, so the product fits in 32 bits with no overflow. The result is combined with col on the next line to produce the flat index used as a scaled addressing offset in the subsequent movsx load.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "89": {
+    "instruction": "movsx   rsi, dword [r12 + rax*4]",
+    "why": "Matrix elements are int32, but printf's '%d' format on x86-64 examines the full 64-bit rsi. 'movsx' sign-extends the 32-bit integer to 64 bits, correctly representing negative matrix values. Using 'mov esi, dword [...]' (zero-extension) would make any negative element, such as -1 (0xFFFFFFFF), appear as a large positive number (4294967295) in the printed output.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "93": {
+    "instruction": "xor     eax, eax",
+    "why": "printf is variadic; AL must be 0 before each call. This sits inside the inner column loop and runs once per element, so omitting it here would be harder to spot than in the outer setup code. The preceding imul and movsx instructions leave eax with non-zero values, so without this zeroing, AL could indicate spurious XMM float arguments, corrupting printf's output for numeric elements.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "109": {
+    "instruction": "pop     r15",
+    "why": "The four pop instructions at lines 109-112 restore r12-r15 in strict LIFO order — r15 was pushed last so it must be popped first. If the pop order were reversed, each register would silently receive the value that was saved by a different register, corrupting the caller's loop state, frame pointer, or other data without any immediate error.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "125": {
+    "instruction": "push    rbp",
+    "why": "Beginning of main's frame prologue. The C runtime expects rbp to be callee-saved on return from main. This push is also the first step in the alignment calculation: (8 bytes return address) + (8 bytes saved rbp) + (544 bytes sub rsp) = 560, which is 560 / 16 = 35 exactly, so rsp is 16-byte aligned before every call in main.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "126": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Captures rsp as the frame base immediately after pushing rbp. All locals — N at [rbp-4], matrix A at [rbp-264], and matrix T at [rbp-520] — are addressed as fixed negative offsets from rbp. This makes every local-variable address deterministic and independent of how rsp moves during the nested read and print loops.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "128": {
+    "instruction": "sub     rsp, 544",
+    "why": "The frame holds 4 bytes for N (padded to 8), plus two 8x8 int32 matrices at 256 bytes each = 520 bytes of locals. Rounding up to 544 makes the total frame (8 + 8 + 544 = 560) a multiple of 16, satisfying the System V ABI requirement that rsp be 16-byte aligned immediately before every call instruction so that aligned-memory SIMD operations inside callees work correctly.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "139": {
+    "instruction": "movsx   r12, dword [rbp - 4]",
+    "why": "N is stored as int32 but will be used in 64-bit address arithmetic (e.g. 'imul rax, r12' to compute row * N as a 64-bit flat index). 'movsx' sign-extends the 32-bit value to 64 bits so negative user inputs are handled correctly and the subsequent 64-bit multiplications produce correct results. It also deposits N into callee-saved r12 so it survives all the printf and read_n calls in the matrix-reading loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/movsx:movsxd"
+  },
+  "173": {
+    "instruction": "imul    rax, r12",
+    "why": "Computes row * N to obtain the row's base flat index. r12 holds N as a 64-bit value (sign-extended from int32), ensuring the multiplication produces a correct 64-bit result. A 32-bit imul would be sufficient for N <= 8, but using 64-bit operands here is consistent with the 64-bit loop variables r13 and r14 and avoids silent truncation if the code is later extended to larger matrices.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "178": {
+    "instruction": "lea     rcx, [rax*4]",
+    "why": "Each int32 element occupies 4 bytes, so the byte offset into the matrix is flat_index * 4. 'lea' computes this using the CPU's address-generation unit without touching the ALU or modifying flags, producing the byte offset in rcx in one cycle. The alternative 'shl rax, 2' would shift rax in place, destroying the flat index before it is added to the matrix base address in rsi.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "207": {
+    "instruction": "mov     ecx, [rbp - 264 + rax*4]",
+    "why": "Loads the int32 source element A[j][i] into ecx for the transpose copy. A 32-bit 'mov ecx' is correct here because the destination slot is also int32 and no sign-extension is needed for the copy itself — printing is handled separately inside print_matrix, which uses movsx. Writing the full rcx would accidentally zero-extend to 64 bits, and storing it would then only write the low 32 bits anyway since the target is dword-sized, but being explicit about 32-bit intent avoids confusion.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "213": {
+    "instruction": "mov     [rbp - 520 + rax*4], ecx",
+    "why": "Stores A[j][i] into T[i][j] at the flat offset computed above. The target matrix T begins at [rbp-520]. Writing 32-bit ecx to a dword slot ensures only 4 bytes are touched, preserving the adjacent element. The transpose loop visits every (i,j) pair exactly once, so no element is written more than once and no explicit initialization of T is needed before the loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "241": {
+    "instruction": "xor     eax, eax",
+    "why": "Sets main's return value to 0 (process exit code = success) before 'leave; ret'. 'xor eax, eax' is preferred over 'mov eax, 0': 2 bytes vs 5, it implicitly zeroes all of rax above bit 31, and it does not produce a false read dependency on the previous value of eax.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "242": {
+    "instruction": "leave",
+    "why": "'leave' performs 'mov rsp, rbp; pop rbp' in a single byte, undoing the frame setup from lines 125-128. It moves rsp from 544 bytes below the frame base back to just above the saved rbp, then restores the caller's rbp. The following 'ret' can then correctly pop the return address and hand control back to the C runtime.",
+    "doc_url": "https://www.felixcloutier.com/x86/leave"
+  }
+}

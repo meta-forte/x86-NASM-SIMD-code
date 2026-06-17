@@ -1,0 +1,107 @@
+{
+  "47": {
+    "instruction": "test    rsi, rsi",
+    "why": "'test rsi, rsi' computes rsi AND rsi and discards the result, setting ZF if rsi is zero. It is preferred over 'cmp rsi, 0' because it encodes in 3 bytes (no immediate operand) versus 4, and modern CPUs recognise it as the canonical zero-test. The Euclidean algorithm terminates when b becomes 0, so this is exactly the loop exit condition: GCD(a, 0) = a.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "48": {
+    "instruction": "jz      .done",
+    "why": "'jz' (jump if zero flag set) and 'je' (jump if equal) are the same opcode — the assembler accepts both. 'jz' is chosen here because we are not comparing two values; we are testing whether a single register is zero. Using 'jz' makes the intent explicit: jump when b (rsi) is exactly zero, which is the GCD base case.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "49": {
+    "instruction": "mov     rax, rdi",
+    "why": "idiv implicitly uses rdx:rax as the dividend — it reads the 128-bit value formed by rdx (high) and rax (low). The current value of a lives in rdi (the first function argument), so we must copy it to rax before the division. Forgetting this and going straight to cqo would sign-extend whatever garbage was in rax, producing a wrong quotient.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "50": {
+    "instruction": "cqo",
+    "why": "'cqo' (Convert Quadword to Octword) sign-extends the 64-bit value in rax into the 128-bit pair rdx:rax by filling rdx with copies of rax's sign bit. idiv requires a proper 128-bit signed dividend; if you skip cqo, rdx contains whatever was left by a previous instruction and idiv divides the wrong 128-bit number, producing a silent incorrect remainder. For positive values of a this means rdx = 0, but for negative a the sign bit must propagate into rdx or the division is wrong.",
+    "doc_url": "https://www.felixcloutier.com/x86/cwd:cdq:cqo"
+  },
+  "51": {
+    "instruction": "idiv    rsi",
+    "why": "idiv divides the 128-bit signed value rdx:rax by the operand (rsi = b) and writes the quotient to rax and the remainder to rdx. We need the remainder (a mod b) to implement the Euclidean step. Using 'div' (unsigned) instead of 'idiv' would give the wrong result for any negative input because it interprets rdx:rax as an unsigned quantity. After this instruction rax = a/b (discarded) and rdx = a mod b (the new b).",
+    "doc_url": "https://www.felixcloutier.com/x86/idiv"
+  },
+  "53": {
+    "instruction": "mov     rdi, rsi",
+    "why": "The Euclidean update is (a, b) <- (b, a mod b). rsi holds the current b, which becomes the new a. This move must happen before rsi is overwritten on the next line; doing the two moves in this order (rdi = rsi, then rsi = rdx) is safe because rdi and rdx do not conflict.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "54": {
+    "instruction": "mov     rsi, rdx",
+    "why": "rdx holds the remainder from idiv (a mod b), which becomes the new b for the next iteration. After this move, rdi = old b and rsi = old a mod b, matching the Euclidean recurrence exactly. On the next pass, 'test rsi, rsi' will check whether the new b is zero.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "57": {
+    "instruction": "mov     rax, rdi",
+    "why": "The ABI returns integer values from functions in rax. When the loop exits (b = 0), rdi holds a, which is the GCD. Moving it to rax makes it the function's return value. The caller (the GCD fold loop in main) reads rax after 'call gcd' to get the result.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "80": {
+    "instruction": "push    rbp",
+    "why": "main is a callee from the C runtime's perspective and must save rbp. More practically, the 'call main' pushed an 8-byte return address; this push restores 16-byte alignment so that the subsequent 'call printf' and 'call scanf' functions work correctly with any internal SSE or AVX operations that require aligned stack access.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "82": {
+    "instruction": "sub     rsp, 528",
+    "why": "We store N (8 bytes) plus up to 64 integers (64 * 8 = 512 bytes) as a stack-allocated array, totalling 520 bytes. Rounding up to 528 (the next multiple of 16) keeps rsp 16-byte aligned after the push rbp + return address already on the stack. Using a fixed-size frame instead of a dynamic 'sub rsp, r12*8' is simpler and avoids the need to touch rsp again after reading N.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "86": {
+    "instruction": "xor     eax, eax",
+    "why": "printf is variadic, so AL must be zero before the call to indicate zero floating-point arguments in XMM registers. This is the same rule that applies in every other file, but here there is an important subtlety: this 'xor eax, eax' appears between the two call setup sequences and must not be omitted even though we might think a previous instruction already zeroed eax.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "90": {
+    "instruction": "lea     rsi, [rbp - 8]",
+    "why": "scanf writes the count N into the address held by rsi. LEA computes the address rbp-8 (where N lives on the stack) without dereferencing it. If 'mov rsi, [rbp - 8]' were used, rsi would receive the uninitialized value at that location and scanf would write through a garbage pointer, causing a crash.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "93": {
+    "instruction": "mov     r12, [rbp - 8]",
+    "why": "r12 is callee-saved, meaning printf, scanf, and our own gcd function all guarantee to leave it unchanged. Caching N in r12 now means we never have to reload it from the stack inside the read or GCD loops. The caller-saved registers rdi, rsi, rax, rdx would all be overwritten by each printf/scanf call, so they cannot hold N across iterations.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "96": {
+    "instruction": "xor     r13, r13",
+    "why": "r13 will be the loop index i, initialised to 0. 'xor r13, r13' (3 bytes) is preferred over 'mov r13, 0' (up to 7 bytes for a 64-bit immediate zero) because the assembler and CPU recognise the xor form as a zero idiom: it breaks the false dependency on the register's previous value in the out-of-order execution pipeline, allowing the CPU to rename it freely. r13 is callee-saved, so subsequent printf calls will not disturb the counter.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "100": {
+    "instruction": "jge     .read_done",
+    "why": "'jge' (jump if greater or equal, signed) exits when i >= N. This correctly terminates the loop after exactly N iterations (i = 0, 1, ..., N-1). Using 'jg' instead would execute one extra iteration (reading one element past the end of the intended range), and using 'jne' would be unsafe if i somehow overshot N.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "105": {
+    "instruction": "inc     rsi",
+    "why": "The loop index r13 is 0-based internally, but the user-facing prompt says 'Enter number 1:', 'Enter number 2:', etc. We copy r13 to rsi (the second printf argument) and then increment rsi before the call, converting from 0-based to 1-based for display only. r13 itself is untouched and stays correct as the array index.",
+    "doc_url": "https://www.felixcloutier.com/x86/inc"
+  },
+  "118": {
+    "instruction": "mov     rsi, rbp",
+    "why": "We need to compute the address &numbers[i] = rbp - 16 - i*8. The calculation is done in three steps: load rbp, subtract 16 to reach numbers[0], then subtract i*8 to reach numbers[i]. Starting from rbp explicitly avoids needing a separate 'base pointer' variable and keeps the address arithmetic readable. Using LEA for all three steps in one instruction is possible but the multi-step form here matches the comment explanation.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "121": {
+    "instruction": "imul    rax, 8",
+    "why": "Array elements are 64-bit integers (8 bytes each), so to find the byte offset of element i we multiply i by 8. The two-operand form 'imul rax, 8' treats the literal 8 as a sign-extended immediate and stores rax * 8 back in rax. An alternative would be 'lea rax, [r13*8]', which also encodes compactly, but the imul form is more explicit about what is happening: a stride multiplication.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "122": {
+    "instruction": "sub     rsi, rax",
+    "why": "The stack grows downward, so successive array elements are at decreasing addresses. numbers[0] is at rbp-16 (the highest address), numbers[1] at rbp-24, and numbers[i] at rbp-16-i*8. Subtracting i*8 (in rax) from rsi (currently rbp-16) gives the correct address. If we added instead of subtracted, we would read above the array into already-allocated frame data.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "132": {
+    "instruction": "mov     rdi, [rbp - 16]",
+    "why": "The GCD fold starts with numbers[0] as the initial accumulator. [rbp - 16] is exactly where numbers[0] was stored (rbp-8 = N, rbp-16 = numbers[0]). Loading it into rdi places it in the first argument register, ready for the first 'call gcd'. If we started with an arbitrary seed like 0 or 1 instead, the fold would compute GCD(0, numbers[0]) = numbers[0] for the first step, which accidentally works but is harder to reason about.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "156": {
+    "instruction": "mov     r12, rdi",
+    "why": "After the GCD fold loop, rdi holds the final HCF result. We must save it into the callee-saved r12 before setting up the printf call, because the 'lea rdi, [rel fmt_out]' on the next line will overwrite rdi with the format string pointer. r12 then provides the value for rsi (the printf argument). Forgetting this save and using rdi directly for both the format and the value would lose the result.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  }
+}

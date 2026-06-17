@@ -1,0 +1,107 @@
+{
+  "52": {
+    "instruction": "movzx   rax, dil",
+    "why": "dil is the low 8 bits of rdi (the leading-byte argument). Before doing arithmetic on it, we need it in a full-width register; simply reading al would leave the upper 56 bits of rax with stale values from the previous instruction. 'movzx' zero-extends the byte to 64 bits so all subsequent AND and CMP operations work on the byte value only. Using 'movsx' instead would sign-extend a high-bit byte (e.g. 0xC0) to a large negative 64-bit number, causing every comparison to fail.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "55": {
+    "instruction": "test    al, 0x80",
+    "why": "The mask 0x80 (binary 1000_0000) isolates the most-significant bit. In UTF-8, if bit 7 is 0 the entire byte is an ASCII codepoint (U+0000..U+007F) and no further decoding is needed. 'test' sets ZF without modifying al, so 'jz .len1' routes all ASCII bytes in a single branch. Any byte with bit 7 set is either a leading byte of a multi-byte sequence or a continuation byte, requiring the further cascade of checks below.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "60": {
+    "instruction": "and     ecx, 0xE0",
+    "why": "The mask 0xE0 (binary 1110_0000) keeps only the top 3 bits. A 2-byte UTF-8 leading byte follows the pattern 110xxxxx; masking to the top 3 bits turns every possible 2-byte leader into exactly 0xC0. Using only 3 bits is correct here because the lower 5 bits carry payload data (part of the codepoint value) and must not affect the length decision.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "61": {
+    "instruction": "cmp     ecx, 0xC0",
+    "why": "After masking with 0xE0, any 2-byte leading byte (110xxxxx) produces exactly 0xC0 (110_00000). 'cmp' subtracts without storing, setting ZF on equality. This is how the decoder asks 'is this a 2-byte codepoint start?' without destroying either eax (which still holds the full byte for subsequent checks) or ecx.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "66": {
+    "instruction": "and     ecx, 0xF0",
+    "why": "The mask 0xF0 (binary 1111_0000) keeps the top 4 bits for the 3-byte check. A 3-byte leading byte follows the pattern 1110xxxx; 4 bits are needed rather than 3 because the 3-byte prefix (1110) differs from the 2-byte prefix (1100) only in the 4th bit — a 3-bit mask would confuse the two.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "67": {
+    "instruction": "cmp     ecx, 0xE0",
+    "why": "After masking with 0xF0, a 3-byte leading byte (1110xxxx) yields exactly 0xE0 (1110_0000). If this comparison also fails, the only remaining valid UTF-8 leading byte is 4-byte (11110xxx), so the function falls through to 'mov rax, 4'. The cascade of AND+CMP pairs maps every valid leading byte to the correct byte count without any jump table or lookup table.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "96": {
+    "instruction": "push    rbp",
+    "why": "Beginning of main's callee-save prologue. rbp must be preserved for the C runtime that called main, and this push is the first step of the standard frame setup. It also contributes to alignment: (8 bytes return address already on stack) + (8 bytes this push) + (2576 bytes sub rsp) = 2592, and 2592 / 16 = 162 exactly, so rsp is 16-byte aligned before every call inside main.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "97": {
+    "instruction": "mov     rbp, rsp",
+    "why": "Captures the stack pointer as the frame base immediately after saving rbp. All three stack regions — input buffer at [rbp-256], output buffer at [rbp-512], and the codepoint table growing downward from [rbp-512-16] — are addressed as fixed negative offsets from this frozen rbp value, even after rsp is moved 2576 bytes lower.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "98": {
+    "instruction": "sub     rsp, 2576",
+    "why": "Three buffers live on the stack: 256 bytes for the input string, 256 bytes for the output string, and up to 128 codepoint table entries at 16 bytes each (2048 bytes), totalling 2560 bytes of locals. Rounding up to 2576 makes the complete frame size (8 + 8 + 2576 = 2592) a multiple of 16, maintaining the ABI's 16-byte rsp alignment requirement before all call instructions inside main.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "107": {
+    "instruction": "xor     eax, eax",
+    "why": "scanf is variadic; AL must equal the count of XMM floating-point arguments before the call. We pass none, so eax must be 0. 'xor eax, eax' is the canonical zero idiom: 2 bytes, implicit zero of the upper 32 bits of rax, and no false output dependency on the previous value of eax, which may have been set by the preceding printf call.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "114": {
+    "instruction": "lea     r12, [rbp - 256]",
+    "why": "r12 is the forward scan pointer that walks byte-by-byte through the input buffer during Pass 1. Initializing it with 'lea' computes the address of the first byte without dereferencing memory. r12 is callee-saved, so it survives every call to codepoint_len inside the scan loop without needing to be spilled and reloaded from the stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "115": {
+    "instruction": "xor     r13, r13",
+    "why": "r13 counts how many codepoints (leading bytes) have been recorded in the table. It must start at 0 before the scan loop and is also used in Pass 2 to determine the index of the last codepoint. r13 is callee-saved, ensuring codepoint_len cannot corrupt the count. 'xor r13, r13' is the canonical zero idiom — preferred over 'mov r13, 0' (7 bytes in 64-bit REX form).",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "125": {
+    "instruction": "and     rcx, 0xC0",
+    "why": "The mask 0xC0 (binary 1100_0000) keeps only the top 2 bits. All UTF-8 continuation bytes share the pattern 10xxxxxx, so masking with 0xC0 and comparing to 0x80 is the canonical test for 'is this a continuation byte?'. Continuation bytes do not start a new codepoint and must be skipped in Pass 1 — they belong to the codepoint whose leading byte was recorded just before them.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "126": {
+    "instruction": "cmp     rcx, 0x80",
+    "why": "After masking with 0xC0, any continuation byte (10xxxxxx) equals exactly 0x80. 'cmp' sets ZF on equality without modifying rcx or rax. The following 'je .advance' skips the table-recording code and just increments r12, letting the scan pointer step past continuation bytes. Without this skip, each continuation byte would be miscounted as a new 1-byte codepoint, producing a garbled reversal.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "135": {
+    "instruction": "imul    rcx, 16",
+    "why": "Each codepoint table entry occupies 16 bytes (8 bytes for the byte offset + 8 bytes for the byte length). Multiplying the codepoint index r13 by 16 converts it to a byte stride into the table. Without this multiplication we would try to pack adjacent entries at 1-byte spacing, overlapping the offset field of one entry with the length field of the next and corrupting all stored metadata.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "136": {
+    "instruction": "add     rcx, 16",
+    "why": "Table entries are stored as negative offsets from r14 (the table base pointer). Entry 0 must live at [r14-16], entry 1 at [r14-32], etc. — if entry 0 were at [r14-0] it would overlap r14 itself. Adding 16 here shifts the byte index by one full entry, so the first entry is correctly placed immediately below the base pointer. Omitting this would make every entry write overlap or overwrite the base pointer itself.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "163": {
+    "instruction": "test    r12, r12",
+    "why": "In Pass 2, r12 is the codepoint index counting down from (r13-1) to 0. After decrementing past 0 it becomes -1 (0xFFFFFFFFFFFFFFFF), at which point SF=1. 'test r12, r12' sets SF without modifying r12, enabling the following 'js .emit_done' to exit the loop cleanly. Using 'cmp r12, 0' would also work but requires an explicit zero operand; 'test' is shorter and idiomatic for this pattern.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "164": {
+    "instruction": "js      .emit_done",
+    "why": "'js' (jump if sign) exits the emit loop when r12 goes negative — specifically when it wraps from 0 to -1 after the 'dec r12' at the bottom of the loop. The loop must process index 0 (the first codepoint), so the exit condition cannot be 'jz' (which would exit before processing index 0). 'js' after 'test r12, r12' is the idiomatic pattern for 'loop while index >= 0'.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "194": {
+    "instruction": "mov     byte [r15], 0",
+    "why": "The output buffer is an uninitialized stack region. After copying all reversed codepoints, r15 points to the first unused byte. printf's '%s' formatter scans forward until it finds a 0x00 byte; without this explicit null terminator, printf would print the reversed string followed by arbitrary stack garbage until it coincidentally encountered a zero. This single byte write prevents both garbled output and a potential stack data disclosure.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "199": {
+    "instruction": "xor     eax, eax",
+    "why": "printf is variadic, so AL must be 0 to indicate zero XMM float arguments before the call. This same zeroing also sets the return value of main to 0 (process exit code = success), since 'leave; ret' immediately follow without any further modification of eax. Two purposes are served by one instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "203": {
+    "instruction": "leave",
+    "why": "'leave' performs 'mov rsp, rbp; pop rbp' in one byte, completely undoing the frame setup from lines 96-98. Without it, rsp would still be 2576 bytes below the frame base; the following 'ret' would pop the wrong word as the return address and transfer control to a garbage location. The single-byte encoding also makes function epilogues more compact than writing the two-instruction equivalent.",
+    "doc_url": "https://www.felixcloutier.com/x86/leave"
+  }
+}

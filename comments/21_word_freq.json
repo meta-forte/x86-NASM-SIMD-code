@@ -1,0 +1,102 @@
+{
+  "78": {
+    "instruction": "push rbp",
+    "why": "Saves the caller's frame pointer per the callee-save ABI. ht_init is called from _start, which then calls process_text and print helpers. Without saving rbp here, the 'mov rbp, rsp' below would destroy the caller's frame pointer, breaking debugger stack unwinds. The push also restores 16-byte stack alignment after the call instruction's 8-byte return-address push.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "79": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Establishes the frame base pointer for ht_init. Although the function uses no local variables, the rbp anchor lets debuggers correctly attribute instructions to this frame and is required if future edits add a stack allocation. rsp will change as the initialisation loop modifies registers, but rbp stays fixed.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "84": {
+    "instruction": "mov  rax, -1",
+    "why": "The hash table uses -1 (0xFFFFFFFFFFFFFFFF) as the sentinel meaning 'empty bucket' because -1 is not a valid entry-pool index (valid indices are 0 to MAX_WORDS-1). Storing this in rax once and then writing it into every bucket in a loop avoids reloading the constant 64 times. The signed representation -1 is also the conventional 'not found' sentinel for the chain-linked index fields inside each entry.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "86": {
+    "instruction": "mov  [rdi], rax",
+    "why": "Writes the -1 sentinel into the current bucket slot. The loop increments rdi by 8 bytes (one int64_t) per iteration so successive stores fill every bucket without recomputing each address. This is equivalent to 'memset(ht_buckets, 0xFF, 64*8)' but with explicit control over the exact sentinel value rather than relying on byte-wise filling.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "108": {
+    "instruction": "mov  rax, 5381",
+    "why": "5381 is the djb2 seed chosen empirically by Dan Bernstein. It is a prime whose binary pattern (1010100000101) avoids concentrating set bits at the low end, so the very first multiply-by-33 spreads the initial state across many bit positions. A seed of 0 would make every empty string hash to 0, and a seed of 1 would make single-character strings cluster in bucket 1; the non-trivial seed prevents those degenerate cases.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "111": {
+    "instruction": "movzx rcx, byte [rdi]",
+    "why": "Loads one byte from the string and zero-extends it to 64 bits. Without the zero-extension, the upper bytes of rcx would retain stale values from the previous iteration, and the subsequent 'test cl, cl' null check — and the 'add rax, rcx' that folds the character into the hash — would incorporate garbage from the high bits. MOVZX makes the character value unambiguously a clean 8-bit quantity widened to 64 bits.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "117": {
+    "instruction": "imul  rax, rax, 33",
+    "why": "Multiplying by 33 (= 32 + 1 = 2^5 + 1) is the core djb2 mixing step. It is equivalent to (hash << 5) + hash, which shifts the existing bit pattern up by 5 positions and adds the original. This mixes each character's contribution across multiple bit positions so that words differing by one character or by character position hash to very different values. A power-of-two multiplier would merely shift bits and lose the lower-order positions entirely, causing far more collisions.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "118": {
+    "instruction": "add   rax, rcx",
+    "why": "Folds the current character byte into the running hash. After the multiply-by-33 the character is added (some djb2 variants XOR instead; the comment above shows the alternative). Each character's byte value is incorporated into every subsequent multiply step, so characters at different positions produce distinct hash chains even if they share the same set of bytes.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "164": {
+    "instruction": "and  rax, BUCKET_MASK",
+    "why": "Reduces the 64-bit hash to a bucket index in the range [0, 63]. Because the bucket count (64) is a power of two, x % 64 == x & 63, turning an expensive division into a single bitwise AND. This is why NUM_BUCKETS is defined as a power of two: the mask trick only works for powers of two. BUCKET_MASK is the constant 63, computed once in the %define at the top of the file.",
+    "doc_url": "https://www.felixcloutier.com/x86/and"
+  },
+  "168": {
+    "instruction": "mov  rbx, [ht_buckets + r13*8]",
+    "why": "Loads the head-of-chain entry index for the bucket that the word hashed into. The *8 scale converts the bucket index (r13, an integer 0-63) to a byte offset into the int64_t array ht_buckets. The result is either -1 (empty bucket, word not yet seen) or an index into the ht_entries pool where the chain begins. rbx is used (callee-saved) because it must survive the subsequent calls during collision scanning.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "175": {
+    "instruction": "imul r14, rbx, ENTRY_SIZE",
+    "why": "Converts an entry-pool index (rbx) to a byte offset by multiplying by the entry size (48 bytes). x86-64 has no native 'array element' addressing for strides other than 1, 2, 4, or 8, so the stride multiplication must be explicit when ENTRY_SIZE is 48. Adding this offset to ht_entries then yields the pointer to the entry, which r14 will hold for the duration of the comparison or insertion.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "183": {
+    "instruction": "add  qword [r14 + ENTRY_COUNT_OFF], 1",
+    "why": "Increments the count field of the matching entry directly in memory without loading it into a register first. The memory-destination ADD is an atomic read-modify-write on a single cache line, and it avoids allocating a temporary register. ENTRY_COUNT_OFF (32) is the compile-time byte offset of the count field within the 48-byte entry struct, so this is equivalent to 'entry->count++' in C.",
+    "doc_url": "https://www.felixcloutier.com/x86/add"
+  },
+  "200": {
+    "instruction": "mov  rcx, ENTRY_SIZE / 8",
+    "why": "Sets the iteration count for the zeroing loop: the entry is 48 bytes wide and is cleared 8 bytes at a time, requiring exactly 6 iterations. The division is evaluated at assemble time by NASM (ENTRY_SIZE/8 = 48/8 = 6), producing a literal 6 in the object file. Zeroing ensures the word field, count, and next_index all start clean before the new word is copied in and count is set to 1.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "229": {
+    "instruction": "mov  rax, [ht_buckets + r13*8]",
+    "why": "Reads the current head-of-chain index for this bucket just before inserting a new entry. The new entry's 'next' field will be set to this value, prepending the new entry to the existing chain. Reading the old head first (rather than always writing -1 to next) correctly handles the case where the bucket already has one or more entries — the new entry points to them and becomes the new head.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "230": {
+    "instruction": "mov  [r14 + ENTRY_NEXT_OFF], rax",
+    "why": "Stores the old chain head into the new entry's 'next_index' field, implementing a singly-linked list prepend. After this instruction the new entry is linked into the existing chain. Head-insertion is O(1) and avoids traversing to the tail, which would require an O(chain-length) walk.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "233": {
+    "instruction": "mov  [ht_buckets + r13*8], rbx",
+    "why": "Updates the bucket's head pointer to the newly inserted entry index, completing the prepend. After lines 229-230-233 together: the new entry exists in the pool, its next field points to the old chain, and the bucket now points to the new entry. This is the standard singly-linked list head-insert pattern: new->next = head; head = new.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "294": {
+    "instruction": "xor  r13, r13",
+    "why": "Resets the word-buffer write index to 0 at the start of each new token. Without this reset, successive words would be appended to whatever was in the buffer from the previous word. r13 is callee-saved, so it is still alive across the ht_lookup_or_insert call that processes the completed word, but it must be explicitly zeroed here because there is no automatic zeroing between calls.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "316": {
+    "instruction": "or   al, 0x20",
+    "why": "Sets bit 5 of the ASCII code, which is the only bit that differs between uppercase letters (0x41-0x5A) and their lowercase counterparts (0x61-0x7A). ORing with 0x20 converts 'A' to 'a', 'B' to 'b', and so on, in a single instruction without a branch or a lookup table. This makes the word-frequency count case-insensitive ('The' and 'the' map to the same bucket).",
+    "doc_url": "https://www.felixcloutier.com/x86/or"
+  },
+  "443": {
+    "instruction": "xor  rbx, rbx",
+    "why": "Initialises the entry iteration index to 0 for the final print loop. The loop walks every allocated entry in the pool in insertion order (not bucket order), which is simpler than iterating over all 64 buckets and chasing chains. rbx is callee-saved and used here because the body of the loop calls print_cstr and print_u64, both of which would clobber caller-saved registers.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "451": {
+    "instruction": "imul r14, rbx, ENTRY_SIZE",
+    "why": "Converts the entry pool index rbx into a byte offset for the print loop, exactly as in ht_lookup_or_insert. Because ENTRY_SIZE is 48 (not a power of two), scaled-index addressing cannot encode this stride directly and the explicit multiply is required each iteration. r14 then holds the pointer to the current entry's word string (offset 0) and count field (offset 32).",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  }
+}

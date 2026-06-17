@@ -1,0 +1,102 @@
+{
+  "88": {
+    "instruction": "push rbp",
+    "why": "The System V AMD64 ABI designates rbp as callee-saved: any function that uses rbp must restore it to the caller's value before returning. Pushing it here is the first half of that contract, creating the frame that lets debuggers and profilers walk the call stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "89": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Establishing rbp as the frame pointer gives a stable reference to this function's activation record that does not move when rsp changes due to subsequent push/pop instructions. This is standard C calling-convention practice and enables stack unwinding.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "107": {
+    "instruction": "imul rax, r8, 16",
+    "why": "Row-major layout means row r8 starts at byte offset r8*16 (16 pixels per row). The SIB byte in x86-64 memory addressing only supports scale factors of 1, 2, 4, and 8 — not 16. IMUL with an immediate is therefore necessary to compute the byte offset, and the three-operand form keeps rdx untouched.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "109": {
+    "instruction": "movzx r10, byte [rdi + rax]",
+    "why": "Pixel values are unsigned 8-bit quantities (0–255). MOVZX zero-extends the single byte into a full 64-bit register so the subsequent 64-bit subtraction on line 112 works correctly. Without zero-extension, the upper bits of r10 would contain garbage from a prior iteration and the absolute-difference calculation would produce wrong results.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "112": {
+    "instruction": "sub  r10, r11",
+    "why": "We compute cur_pixel - ref_pixel as a signed difference to determine which direction to take the absolute value. Pixels are stored as unsigned bytes (0–255), but the difference can be negative (e.g. cur=10, ref=200 → -190), so we need the signed result to know whether to negate. The branch on line 113 then takes the absolute value.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "114": {
+    "instruction": "neg  r10",
+    "why": "We reach this line only when r10 is negative (cur < ref), because the branch on line 113 skips past it when the difference is already non-negative. NEG computes the two's-complement negation (0 - r10), turning a negative difference into its absolute value. This is the scalar equivalent of the absolute-difference that PSADBW performs in hardware for 8 bytes at once.",
+    "doc_url": "https://www.felixcloutier.com/x86/neg"
+  },
+  "148": {
+    "instruction": "pxor  xmm0, xmm0",
+    "why": "XOR-ing an XMM register with itself is the fastest way to zero all 128 bits. We need xmm0 at exactly zero before accumulating PSADBW partial sums into it row by row. PXOR breaks any false dependency on xmm0's previous value, allowing the CPU to schedule this instruction as early as possible.",
+    "doc_url": "https://www.felixcloutier.com/x86/pxor"
+  },
+  "159": {
+    "instruction": "movdqu xmm1, [rdi + rax]",
+    "why": "Each row of the 16x16 block is exactly 16 bytes, which fits perfectly into one XMM register. MOVDQU is the unaligned variant (versus MOVDQA) because the pointer rdi points to user-supplied data whose alignment we do not control. On modern CPUs (Nehalem and later), unaligned loads that happen to hit an aligned address cost no extra cycles, and truly unaligned loads cost only 1-2 extra cycles.",
+    "doc_url": "https://www.felixcloutier.com/x86/movdqu:vmovdqu8/16/32/64"
+  },
+  "163": {
+    "instruction": "psadbw xmm1, xmm2",
+    "why": "PSADBW computes the absolute difference of each of 16 byte pairs (|xmm1[i] - xmm2[i]| for i in 0..15), then horizontally sums the first 8 absolute differences into bits 15:0 of xmm1 and the second 8 into bits 79:64, zeroing all other bits. One instruction therefore replaces 16 subtractions, 16 abs operations, and 14 additions, processing a full 16-pixel row down to two 16-bit partial sums — the heart of the video-codec SAD kernel.",
+    "doc_url": "https://www.felixcloutier.com/x86/psadbw"
+  },
+  "168": {
+    "instruction": "paddq  xmm0, xmm1",
+    "why": "After PSADBW, xmm1 contains two 64-bit values (one in bits 63:0, one in bits 127:64) holding the partial SADs for the left and right halves of the row. PADDQ adds these into the corresponding 64-bit lanes of the accumulator xmm0 without any overflow risk: 16 rows × 16 pixels × max difference 255 = 65,280, which fits comfortably in 64 bits.",
+    "doc_url": "https://www.felixcloutier.com/x86/paddq"
+  },
+  "178": {
+    "instruction": "movq   rax, xmm0",
+    "why": "After 16 rows of accumulation, xmm0 holds two 64-bit partial sums (left-half columns in bits 63:0 and right-half in bits 127:64). MOVQ extracts only the lower 64 bits into rax. We cannot use MOVAPS or similar here because those write to XMM registers or memory — MOVQ is the only instruction that moves exactly 64 bits from an XMM register into a general-purpose register.",
+    "doc_url": "https://www.felixcloutier.com/x86/movq"
+  },
+  "179": {
+    "instruction": "psrldq xmm0, 8",
+    "why": "PSRLDQ shifts the entire 128-bit register right by 8 bytes, moving the upper 64-bit partial sum (right-half columns) down to bits 63:0 and zeroing bits 127:64. This brings the second partial sum into position so the next MOVQ can extract it into rcx for the final add. The shift-and-extract pair is the standard SSE2 horizontal-reduction idiom.",
+    "doc_url": "https://www.felixcloutier.com/x86/psrldq"
+  },
+  "203": {
+    "instruction": "vpxor  ymm0, ymm0, ymm0",
+    "why": "VEX-encoded VPXOR uses a three-operand form (destination is separate from source), which avoids the false write dependency of the two-operand SSE form. Zeroing ymm0 here clears all 256 bits — the full YMM accumulator — before we start accumulating four 64-bit partial SADs from pairs of rows. Using VPXOR instead of separate PXOR on xmm0 also avoids an AVX-SSE transition penalty.",
+    "doc_url": "https://www.felixcloutier.com/x86/pxor"
+  },
+  "230": {
+    "instruction": "vinserti128 ymm1, ymm1, xmm3, 1",
+    "why": "VINSERTI128 inserts a 128-bit XMM register into the upper or lower half of a YMM register. The immediate '1' selects the upper half (bits 255:128). This assembles two separate 16-pixel rows — row r8 already in the lower lane of ymm1 and row r8+1 in xmm3 — into a single 256-bit register so VPSADBW can process both rows with one instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/vinserti128"
+  },
+  "234": {
+    "instruction": "vpsadbw ymm1, ymm1, ymm2",
+    "why": "The AVX2 version of PSADBW operates on 32 bytes (two 16-byte lanes) simultaneously. It produces four 64-bit partial sums: two partial SADs in the lower 128-bit lane (for rows r8's left and right halves) and two in the upper lane (for row r8+1's halves). One instruction thus replaces 32 absolute-difference computations and 28 additions, processing two video rows at once.",
+    "doc_url": "https://www.felixcloutier.com/x86/psadbw"
+  },
+  "239": {
+    "instruction": "vpaddq  ymm0, ymm0, ymm1",
+    "why": "VPADDQ with YMM registers performs four independent 64-bit additions in parallel, accumulating all four partial SADs from vpsadbw into the corresponding lanes of ymm0. Processing two rows per iteration means the loop runs only 8 times instead of 16, halving the loop overhead.",
+    "doc_url": "https://www.felixcloutier.com/x86/paddq"
+  },
+  "259": {
+    "instruction": "vextracti128 xmm1, ymm0, 1",
+    "why": "After the loop, ymm0 holds four 64-bit partial sums (partial_0 through partial_3). VEXTRACTI128 copies the upper 128 bits (partial_2 and partial_3) into xmm1, extracting the upper-lane contributions so they can be added to the lower lane in the next instruction. This is the first step of the 4-to-2-to-1 horizontal reduction tree.",
+    "doc_url": "https://www.felixcloutier.com/x86/vextracti128"
+  },
+  "261": {
+    "instruction": "vpaddq  xmm0, xmm0, xmm1",
+    "why": "Adds the two upper-lane partial sums (now in xmm1) to the two lower-lane partial sums (in xmm0), collapsing four values into two. After this, xmm0[63:0] = partial_0 + partial_2 and xmm0[127:64] = partial_1 + partial_3. One more extraction and scalar add on the next two lines completes the reduction to a single 64-bit SAD total.",
+    "doc_url": "https://www.felixcloutier.com/x86/paddq"
+  },
+  "265": {
+    "instruction": "movq   rax, xmm0",
+    "why": "Extracts the lower 64-bit lane of xmm0 into rax (partial_0 + partial_2). The upper lane (partial_1 + partial_3) is moved to rcx by the psrldq + movq pair that follows. MOVQ is mandatory here: no other instruction can move 64 bits from an XMM register into a general-purpose register in one step.",
+    "doc_url": "https://www.felixcloutier.com/x86/movq"
+  },
+  "270": {
+    "instruction": "vzeroupper",
+    "why": "Any YMM instruction (AVX/AVX2) leaves the upper 128 bits of all YMM registers in a non-zero state known to the CPU. If code subsequently executes an SSE (non-VEX) instruction that implicitly uses the same physical register, the CPU must save and restore the upper bits, causing a severe transition penalty (up to 100 cycles on Sandy Bridge). VZEROUPPER explicitly zeros all upper halves, eliminating that hazard and making it safe to call non-AVX helper functions after AVX code.",
+    "doc_url": "https://www.felixcloutier.com/x86/vzeroupper"
+  }
+}

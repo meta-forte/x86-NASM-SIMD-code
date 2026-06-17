@@ -1,0 +1,82 @@
+{
+  "50": {
+    "instruction": "push    rbp",
+    "why": "rbp is callee-saved under the System V AMD64 ABI: any function that modifies rbp must save the caller's value on entry and restore it before returning, or the caller's frame pointer is silently corrupted. There is a second effect here: 'call print_prompt' pushed an 8-byte return address, leaving rsp misaligned to 8 mod 16; this push adds another 8 bytes and restores 16-byte alignment, which is mandatory before any subsequent 'call'.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "51": {
+    "instruction": "mov     rbp, rsp",
+    "why": "rsp moves every time something is pushed, popped, or a call is made. By copying rsp into rbp immediately after the prologue push, we create a stable anchor for this function's stack frame. Local variables can then be addressed as [rbp - N] even if rsp moves further down during the function body. Without this, every local-variable access would require tracking rsp's exact current offset.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "52": {
+    "instruction": "xor     eax, eax",
+    "why": "printf is a variadic function (C's '...'). The System V AMD64 ABI requires that AL, the low byte of rax, holds the number of floating-point arguments passed in XMM registers before every variadic call. We pass zero floats, so rax must be 0. 'xor eax, eax' is preferred over 'mov eax, 0' because it encodes in only 2 bytes instead of 5, and on x86-64 writing a 32-bit destination automatically zeroes the upper 32 bits of the full 64-bit register.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "65": {
+    "instruction": "xor     eax, eax",
+    "why": "scanf is also a variadic function — its C prototype is 'int scanf(const char *fmt, ...)' — so the same ABI rule applies: AL must contain the count of XMM arguments before the call. Even though scanf reads data rather than printing it, the variadic calling convention is identical. Skipping this can cause scanf to inspect stale XMM registers and behave incorrectly on some systems.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "80": {
+    "instruction": "xor     eax, eax",
+    "why": "printf is called again here to print a row of the table. Each call site must independently satisfy the variadic float-count rule because eax may have been modified by any previous instruction or callee. There is no persistent 'zero' that carries forward from an earlier 'xor eax, eax'; every variadic call needs its own zeroing immediately before the call instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "90": {
+    "instruction": "push    rbp",
+    "why": "main is itself a normal C function invoked by the C runtime with a 'call main' instruction, so it has the same callee-save obligation as any other function. The runtime's 'call main' pushed an 8-byte return address, leaving rsp at 8 mod 16; this push of rbp brings the total to 16 bytes pushed and restores 16-byte alignment before we make further calls.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "92": {
+    "instruction": "sub     rsp, 16",
+    "why": "We need 8 bytes of stack space to hold the local variable N (a 64-bit integer), but the ABI demands rsp be 16-byte aligned at the point of any 'call'. After 'push rbp', exactly 16 bytes have been pushed (return address + saved rbp), so subtracting a further 16 keeps rsp on a 16-byte boundary (total frame = 32). Subtracting only 8 would leave rsp at an odd 8-byte boundary, which can cause SSE-using library functions to fault on misaligned memory accesses.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "96": {
+    "instruction": "lea     rdi, [rel prompt]",
+    "why": "LEA computes the address of 'prompt' and stores it in rdi — it does not read any memory. The '[rel label]' syntax encodes the address as a 32-bit offset from the instruction pointer (RIP-relative), which works in both position-independent and fixed-address binaries and produces a compact 7-byte instruction. Using 'mov rdi, prompt' with an absolute 64-bit address would require 10 bytes and is not supported in 64-bit memory-operand forms. printf receives a pointer to the string, not the string's first byte, so we must load the address, not dereference it.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "101": {
+    "instruction": "lea     rsi, [rbp - 8]",
+    "why": "scanf needs a pointer to write the parsed integer into, not the current value stored at that location. 'lea rsi, [rbp - 8]' computes the address rbp-8 and places it in rsi without reading memory. If 'mov rsi, [rbp - 8]' were used instead, rsi would receive the uninitialized garbage sitting in that stack slot, and scanf would treat that garbage as a memory address to write through — almost certainly causing a segfault.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "105": {
+    "instruction": "mov     r12, [rbp - 8]",
+    "why": "r12 through r15 are callee-saved registers: the ABI guarantees they survive across any function call. The caller-saved registers rdi, rsi, rdx, rcx, rax, r8-r11 will all be overwritten by printf. By loading N into r12 once before the loop, we avoid reloading it from the stack on every iteration. If we had kept N in rdi or rsi, the very first call to print_row would destroy it.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "106": {
+    "instruction": "mov     r13, 1",
+    "why": "r13 is callee-saved for the same reason as r12: calls to print_row (which calls printf internally) will not clobber it. Keeping the loop counter in a callee-saved register means we never need to push or reload it around each call. r13 starts at 1 because the multiplication table begins at 'N x 1', and the loop runs while r13 is less than or equal to 10.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "110": {
+    "instruction": "jg      .done",
+    "why": "'jg' (jump if greater, signed) exits the loop when the counter exceeds 10, after the row for i=10 has already been printed. Using 'jge' instead would exit at i=10, printing only rows 1-9. Using 'jne' would be unsafe: if i somehow jumped past 10, the loop would spin forever. The signed form is correct because r13 is treated as a signed quantity throughout — unsigned 'ja' would behave identically here but would be misleading.",
+    "doc_url": "https://www.felixcloutier.com/x86/jcc"
+  },
+  "113": {
+    "instruction": "imul    rax, r13",
+    "why": "The two-operand form of imul multiplies the destination and source, storing the lower 64 bits of the signed result back in the destination (rax). Unlike the one-operand form 'imul r/m64', which produces a 128-bit result split across rdx:rax, this form keeps the product in a single register. Overflow is silently truncated, but for table values up to 10 times a reasonable user input this is not a concern. The result is then moved into rcx as the fourth printf argument.",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "121": {
+    "instruction": "inc     r13",
+    "why": "'inc r13' is the idiomatic way to increment a loop counter and is equivalent to 'add r13, 1'. It encodes slightly more compactly (no immediate byte needed in some forms) and reads like 'i++' in C. One subtle difference from 'add': inc does not update the carry flag (CF), but since we test only against 10 using 'cmp', CF is irrelevant here.",
+    "doc_url": "https://www.felixcloutier.com/x86/inc"
+  },
+  "126": {
+    "instruction": "xor     eax, eax",
+    "why": "The System V ABI returns integer values from functions in rax. main returning 0 tells the C runtime to pass 0 to the OS exit call, which the shell sees as success in '$?'. 'xor eax, eax' is used here for the same encoding efficiency as the variadic-call zeroing above, but the purpose is entirely different: here we are setting the function's return value, not the floating-point argument count.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "127": {
+    "instruction": "leave",
+    "why": "'leave' is a single-byte instruction exactly equivalent to 'mov rsp, rbp' followed by 'pop rbp'. It tears down the stack frame set up by the prologue: first rsp is restored to the frame base (discarding all local variables at once), then the saved caller's rbp is popped. The alternative of manually writing 'add rsp, 16 / pop rbp' would work too but is error-prone if the local-variable allocation ever changes.",
+    "doc_url": "https://www.felixcloutier.com/x86/leave"
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "58": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved under the System V AMD64 ABI, meaning every function that uses it must save the caller's value and restore it before returning. Pushing it onto the stack is the standard way to do that. Without this save, the caller's frame pointer would be destroyed, breaking debuggers and stack unwinders.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "59": {
+    "instruction": "mov  rbp, rsp",
+    "why": "After saving the old rbp, we set rbp to the current stack pointer to establish a stable frame pointer for this function. All local variables and saved registers are at fixed negative offsets from rbp, while arguments passed on the stack are at positive offsets. This makes manual debugging much easier and is required for tools like gdb backtrace to work correctly.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "60": {
+    "instruction": "xor  rcx, rcx",
+    "why": "We need rcx = 0 as our character counter. XOR of a register with itself is a 3-byte encoding vs 7 bytes for 'mov rcx, 0', and CPUs recognize it as a zero-idiom with no false dependency on the previous value of rcx. Writing to ecx (the 32-bit half) would also zero the upper 32 bits of rcx, but xor rcx, rcx is idiomatic here.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  },
+  "62": {
+    "instruction": "cmp  byte [rdi + rcx], 0",
+    "why": "We must tell the CPU the operand size explicitly when comparing a memory location against an immediate, because the immediate '0' alone does not carry size information. The 'byte' qualifier says load exactly one byte from address (rdi+rcx), preventing accidental 2-, 4-, or 8-byte reads that could cross a page boundary or read past the end of the string.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "79": {
+    "instruction": "push rbp",
+    "why": "Same callee-save discipline as in str_len. Even though sys_write is a thin wrapper around a syscall and doesn't use rbp for addressing, we push/pop it for ABI correctness. Omitting it would cause the caller's frame pointer to appear corrupted in any debugger or stack trace.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "81": {
+    "instruction": "mov  rax, 1",
+    "why": "The Linux x86-64 syscall ABI selects the kernel service by the value in rax. Syscall 1 is 'write'. The argument registers (rdi=fd, rsi=buf, rdx=count) were already set by the caller, so loading the syscall number into rax is the only thing left to do before issuing the syscall instruction.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "82": {
+    "instruction": "syscall",
+    "why": "The syscall instruction is the x86-64 mechanism for entering the kernel. It saves the return address in rcx, saves rflags in r11, then jumps to the kernel's system-call entry point. The kernel reads rax for the service number and rdi/rsi/rdx/r10/r8/r9 for up to six arguments. Note that r10 (not rcx) is used for the 4th argument, unlike user-space function calls.",
+    "doc_url": "https://www.felixcloutier.com/x86/syscall"
+  },
+  "93": {
+    "instruction": "push rdi",
+    "why": "rdi currently holds the string pointer we want to print. We are about to call str_len, which also takes its argument in rdi — meaning str_len will use rdi for its own purposes. Since rdi is a caller-saved register (we must not expect it to survive across a call), we save it on the stack now so we can recover the pointer after str_len returns.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "97": {
+    "instruction": "pop  rsi",
+    "why": "After str_len returns, rax holds the string length and rdi has been clobbered. We pop the string pointer we saved earlier directly into rsi, which is the second argument to the write syscall (the buffer pointer). This avoids needing a separate scratch register and naturally sets up the syscall argument.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "112": {
+    "instruction": "mov  rsi, newline",
+    "why": "newline is a label in the .data section pointing to a single byte containing ASCII 10. We load the address of that byte into rsi (the buffer pointer for write). We cannot pass the byte value itself here — the write syscall expects a pointer to memory, not an inline immediate value.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "123": {
+    "instruction": "mov  rax, 60",
+    "why": "Syscall 60 is exit() on Linux x86-64. It terminates the calling process and returns the value in rdi as the exit status to the shell. This function has no prologue/epilogue (push rbp / pop rbp) because it never returns — the kernel terminates the process before the next instruction would execute.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "132": {
+    "instruction": "mov  rax, [rsp]",
+    "why": "At the moment the kernel transfers control to _start, the Linux kernel has already written argc at the top of the stack (rsp+0), followed by the argv pointer array. There is no function call here — _start is not called by user code, so there is no return address on the stack. The very first qword at rsp is argc, which is why we dereference rsp directly.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "135": {
+    "instruction": "cmp  rax, 2",
+    "why": "argc includes the program name itself as argv[0]. So argc == 1 means only the program name was provided and the user gave no argument. We need argc >= 2 to have at least one user-supplied argument (argv[1]). Comparing with 2 and jumping if less captures the 'no argument' case.",
+    "doc_url": "https://www.felixcloutier.com/x86/cmp"
+  },
+  "139": {
+    "instruction": "mov  rdi, [rsp + 16]",
+    "why": "The stack layout at _start is: [rsp+0]=argc, [rsp+8]=argv[0], [rsp+16]=argv[1]. Each entry is 8 bytes (a 64-bit pointer or integer). Offset 16 (= 2 * 8) skips past argc and the argv[0] pointer to land on argv[1], which is a pointer to the first user-supplied string.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "148": {
+    "instruction": "mov  rdi, 0",
+    "why": "rdi is the first argument to sys_exit, which maps to the exit code passed back to the shell. Zero conventionally means success in Unix. We use 'mov rdi, 0' here rather than 'xor edi, edi' purely for readability in this introductory file — both encode a zero exit code correctly.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  }
+}

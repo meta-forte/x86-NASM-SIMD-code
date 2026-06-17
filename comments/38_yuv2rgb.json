@@ -1,0 +1,87 @@
+{
+  "80": {
+    "instruction": "test eax, eax",
+    "why": "TEST computes eax AND eax and discards the result, keeping only the flags. This sets the Sign Flag (SF) if bit 31 is 1 (i.e., the value is negative) without writing to any register. The alternative, 'cmp eax, 0', is equivalent but TEST is one byte shorter in 32-bit register form. It is the idiomatic way to check a register for zero or negative without a side-effecting compare.",
+    "doc_url": "https://www.felixcloutier.com/x86/test"
+  },
+  "99": {
+    "instruction": "push rbp",
+    "why": "rbp is callee-saved under the System V ABI. yuv420_to_rgb_scalar calls clamp_0_255 repeatedly in a loop, and each of those calls could theoretically clobber caller-saved registers. By establishing a proper frame with push rbp / mov rbp, rsp, this function's stack layout is stable and debuggers can walk the call chain correctly. The push also restores 16-byte stack alignment (rsp was 8 mod 16 on entry due to the call instruction).",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "100": {
+    "instruction": "mov  rbp, rsp",
+    "why": "Copies the current stack pointer into rbp to create a fixed frame-base address. With five subsequent push instructions moving rsp down by 40 more bytes, rbp remains stable and makes the saved-register layout predictable. This is essential for debuggers: 'bt' in gdb follows the chain of saved rbp values frame by frame through the call stack.",
+    "doc_url": "https://www.felixcloutier.com/x86/mov"
+  },
+  "101": {
+    "instruction": "push r12",
+    "why": "r12 will hold the Y-row pointer across calls to clamp_0_255. Because clamp_0_255 is a regular function call, all caller-saved registers (rdi, rsi, rdx, rcx, rax, r8-r11) may be clobbered on return. Using callee-saved r12 means the Y pointer survives every iteration of the pixel loop without needing to be reloaded from the stack. The ABI guarantees clamp_0_255 — or any function we call — will preserve r12.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "102": {
+    "instruction": "push r13",
+    "why": "r13 holds the U-plane pointer. Since up to three clamp_0_255 calls occur per pixel and each is a real function call, caller-saved registers would be lost. Storing the U pointer in r13 (callee-saved) removes the need to spill it to the stack between clamp calls, keeping the inner loop compact and avoiding memory round-trips for this pointer.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "103": {
+    "instruction": "push r14",
+    "why": "r14 holds the V-plane pointer throughout the 8-pixel loop. The same logic applies as for r13: because we call clamp_0_255 — a function that may clobber rdi, rsi, rdx, etc. — any pointer we want to survive the call must live in a callee-saved register. r12-r15 and rbx are the callee-saved general-purpose registers available beyond rbp.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "104": {
+    "instruction": "push r15",
+    "why": "r15 holds the RGB output pointer. With eight pixels each requiring three clamp_0_255 calls, the output pointer would otherwise have to be pushed and popped on every iteration or reloaded from a frame-local stack slot. Pinning it in r15 (callee-saved) keeps it live across all 24 total function calls in the loop with no extra memory traffic.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "105": {
+    "instruction": "push rbx",
+    "why": "rbx serves as the pixel index (loop counter). In a loop that calls clamp_0_255 three times per iteration, any caller-saved counter register would be destroyed on the first call. rbx is one of only six callee-saved general-purpose registers (rbx, rbp, r12-r15), making it the natural choice for a long-lived counter in a call-heavy loop.",
+    "doc_url": "https://www.felixcloutier.com/x86/push"
+  },
+  "118": {
+    "instruction": "movzx eax, byte [r12 + rbx]",
+    "why": "Y values are stored as unsigned bytes (0-255). Before doing any 32-bit arithmetic — adding chroma terms, comparing with 255 — the byte must be widened to 32 bits. MOVZX ('Move with Zero-Extension') fills the upper bits with zero, which is correct for an unsigned quantity. Using a plain MOV of 8-bit data into an 8-bit sub-register (e.g. AL) would leave bits 8-31 of eax holding whatever was there before, contaminating the subsequent arithmetic.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "122": {
+    "instruction": "shr  r8, 1",
+    "why": "YUV420 chroma subsampling means each U or V sample covers a horizontal pair of pixels: pixel 0 and 1 share U[0], pixel 2 and 3 share U[1], etc. Dividing the pixel index by 2 (right-shift by 1) computes the chroma index i/2 in a single cycle without a DIV instruction. The result is an unsigned index into the 4-element U and V arrays for this 8-pixel row.",
+    "doc_url": "https://www.felixcloutier.com/x86/sal:sar:shl:shr"
+  },
+  "127": {
+    "instruction": "sub  r9d, 128",
+    "why": "U and V are stored as unsigned bytes in the range [0, 255] with the neutral (grey) point at 128. The BT.601 formula uses (U - 128) and (V - 128) as signed chroma offsets in [-128, 127]. Without this subtraction, multiplying an all-positive chroma value by the coefficient would always push the color in only one direction, producing severely wrong hues. This is the standard 'offset binary' to 'signed' conversion used by every YUV codec.",
+    "doc_url": "https://www.felixcloutier.com/x86/sub"
+  },
+  "133": {
+    "instruction": "imul r11d, [coeff_r_v]",
+    "why": "This is the fixed-point multiply at the heart of BT.601 color conversion. Instead of floating-point multiplication by 1.402, we multiply by 91881 (= round(1.402 * 65536)) using fast integer IMUL. The product is a Q16 number — the true result scaled up by 2^16. A subsequent arithmetic right-shift by 16 (SAR r11d, 16) recovers the integer approximation. IMUL's 32-bit two-operand form writes the low 32 bits of the product to r11d, which is sufficient since both operands are bounded (V-128 fits in 8 bits, coefficient fits in 17 bits, product fits in 25 bits).",
+    "doc_url": "https://www.felixcloutier.com/x86/imul"
+  },
+  "134": {
+    "instruction": "sar  r11d, 16",
+    "why": "SAR ('Shift Arithmetic Right') divides a signed integer by 2^16, rounding toward negative infinity. This is the Q16 fixed-point 'unscale' step: the multiplication by 91881 scaled the result up by 65536, and this shift brings it back to the original magnitude. Using SAR rather than SHR (logical right shift) is critical for negative chroma offsets: SHR would fill the high bits with 0, turning a negative value positive and producing wrong RGB output for dark or saturated colors.",
+    "doc_url": "https://www.felixcloutier.com/x86/sal:sar:shl:shr"
+  },
+  "140": {
+    "instruction": "lea  rax, [rbx + rbx*2]",
+    "why": "This computes rax = rbx * 3 using the address-computation hardware (AGU) rather than a multiply instruction. Each RGB pixel occupies 3 bytes in the output buffer, so the byte offset of pixel i is i * 3. LEA encodes 'base + base*2' in a single instruction at one-cycle latency, which is cheaper than IMUL. This is the classic trick for multiplying by 3, 5, 9, or any (2^n + 1) without touching the multiply unit.",
+    "doc_url": "https://www.felixcloutier.com/x86/lea"
+  },
+  "154": {
+    "instruction": "movzx eax, byte [r12 + rbx]",
+    "why": "Y is reloaded from memory for the G computation because eax was overwritten when computing and clamping R. An alternative would be to save Y to a callee-saved register at the start of each iteration, but all callee-saved registers are already committed to pointer storage (r12-r15, rbx). Reloading from a hot L1-cache address (same Y byte just accessed a few instructions ago) costs effectively zero cycles due to store-to-load forwarding from the same cache line.",
+    "doc_url": "https://www.felixcloutier.com/x86/movzx"
+  },
+  "177": {
+    "instruction": "pop  rbx",
+    "why": "Callee-saved registers must be restored in LIFO (last-in, first-out) order — the reverse of how they were pushed. rbx was pushed last among the callee-saved registers (after r12, r13, r14, r15), so it must be popped first. Any other order would restore the wrong values to the wrong registers, silently corrupting the caller's register state in ways that are extremely difficult to debug.",
+    "doc_url": "https://www.felixcloutier.com/x86/pop"
+  },
+  "373": {
+    "instruction": "xor  rdi, rdi",
+    "why": "The Linux exit() syscall (number 60 in rax) interprets rdi as the exit code. Zero signals success to the shell. Using 'xor rdi, rdi' rather than 'mov rdi, 0' saves 5 instruction bytes (7-byte MOV reg64, imm32 vs 3-byte XOR reg64) and is recognized by the CPU as a dependency-breaking zero idiom, useful here because prior print_cstr calls leave rdi in an unknown state.",
+    "doc_url": "https://www.felixcloutier.com/x86/xor"
+  }
+}
