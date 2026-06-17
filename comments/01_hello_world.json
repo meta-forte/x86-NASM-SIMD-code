@@ -1,4 +1,5 @@
 {
+  
   "22": {
     "instruction": "global main",
     "why": "The linker's job is to combine many object files into one executable. It needs to know which symbol is the entry point. Without 'global main', the symbol 'main' stays file-private and the linker fails with 'undefined reference to main'. The C runtime startup code (crt0) calls main() after initialising argc/argv/envp — it can only do that if the name is exported.",
@@ -9,10 +10,18 @@
     "why": "NASM compiles one file at a time and rejects any symbol it has never seen. 'extern' is a promise to NASM: 'this name is defined somewhere else — leave a placeholder and let the linker fill it in later'. Without this declaration NASM would error on the 'call printf' line. gcc automatically links libc, so the linker finds the real printf there.",
     "doc_url": "https://www.nasm.us/doc/nasmdoc7.html"
   },
+  "28": {
+   "instruction": "section .data",
+   "why": " section .data tells NASM 'the following bytes belong in the program’s data segment,' i.e., memory that holds initialized global variables or constants. You can create arbitrary sections like .myspecial-data and the assembler will allow it. But the linker and OS wont' be able do much with those sections. One should use names that are understood by the linker and the OS . Another import section is '.bss'. bss stands for Block Started by Symbol. The actual meaning of .bss is 'Reserve a block of memory starting at this symbol, but don't store any bytes in the object file' . bss contains uninitialized global/static variables. This secton occupies no space in the executable. The OS loader simply allocates zeroed memory. The memory is uninitialized"
+  },
   "30": {
     "instruction": "msg db \"Hello, World!\", 10, 0",
     "why": "Three separate things are going on here. (1) The string bytes are laid out literally in the binary. (2) The 10 (ASCII newline, '\\n') is needed because printf does not add one automatically — without it, the cursor stays on the same line and the shell prompt appears right after the output. (3) The 0 (null terminator) is how C and printf know where the string ends: they walk bytes until they find 0. Skip it and printf reads garbage past the string, potentially crashing.",
     "doc_url": "https://www.nasm.us/doc/nasmdoc3.html"
+  },
+  "38" {
+   "instruction": "section .text",
+   "why": " section .text has a very specific, universally‑recognized meaning in x86 assembly. This one is special because the OS loader, linker, and CPU all expect it to contain executable machine code. The default ELF linker script, and the OS treat '.text' as the default code segment, the place where the program's entry point (_start or main) must live, a region with executable permissions. " 
   },
   "46": {
     "instruction": "push rbp",
