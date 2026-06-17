@@ -19,7 +19,7 @@
     "why": "Three separate things are going on here. (1) The string bytes are laid out literally in the binary. (2) The 10 (ASCII newline, '\\n') is needed because printf does not add one automatically — without it, the cursor stays on the same line and the shell prompt appears right after the output. (3) The 0 (null terminator) is how C and printf know where the string ends: they walk bytes until they find 0. Skip it and printf reads garbage past the string, potentially crashing.",
     "doc_url": "https://www.nasm.us/doc/nasmdoc3.html"
   },
-  "38" {
+  "38": {
    "instruction": "section .text",
    "why": " section .text has a very specific, universally‑recognized meaning in x86 assembly. This one is special because the OS loader, linker, and CPU all expect it to contain executable machine code. The default ELF linker script, and the OS treat '.text' as the default code segment, the place where the program's entry point (_start or main) must live, a region with executable permissions. " 
   },
