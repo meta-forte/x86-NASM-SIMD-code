@@ -220,6 +220,7 @@
 // When served via a local HTTP server from the repo root, '../src' works.
 const ASM_DIR      = '../src';
 const COMMENTS_DIR = '../comments';
+const CACHE_BUST   = `?v=${Date.now()}`;
 
 // ── File list ─────────────────────────────────────────────────────────────────
 // Files are listed explicitly because browsers cannot list directories.
@@ -387,7 +388,7 @@ async function loadFile(fname) {
   // Fetch source
   let source = '';
   try {
-    const r = await fetch(`${ASM_DIR}/${fname}`);
+    const r = await fetch(`${ASM_DIR}/${fname}${CACHE_BUST}`);
     if (!r.ok) throw new Error(r.statusText);
     source = await r.text();
   } catch (e) {
@@ -398,7 +399,7 @@ async function loadFile(fname) {
 
   // Fetch comments sidecar (optional — don't fail if absent)
   try {
-    const r = await fetch(`${COMMENTS_DIR}/${fname.replace('.asm', '.json')}`);
+    const r = await fetch(`${COMMENTS_DIR}/${fname.replace('.asm', '.json')}${CACHE_BUST}`);
     if (r.ok) currentComments = await r.json();
   } catch (_) { /* no comments file — that's fine */ }
 
