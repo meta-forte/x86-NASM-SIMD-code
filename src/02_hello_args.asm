@@ -34,10 +34,10 @@
 ;   60 = exit(code)             — terminate the process
 ;
 ; Build:
-;   nasm -f elf64 01_hello_args.asm -o bin/01_hello_args.o
-;   ld bin/01_hello_args.o -o bin/01_hello_args
+;   nasm -f elf64 02_hello_args.asm -o bin/02_hello_args.o
+;   ld bin/02_hello_args.o -o bin/02_hello_args
 ; Run:
-;   ./bin/01_hello_args World
+;   ./bin/02_hello_args World
 ; ═══════════════════════════════════════════════════════════════════════════════
 
 section .data

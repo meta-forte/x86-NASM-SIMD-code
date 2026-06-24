@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>x86 NASM Assembly Explorer</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
   <style>
     /* ── Reset / base ──────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -63,9 +64,16 @@
       letter-spacing: 0.06em;
       padding: 8px 12px 4px;
     }
-    #file-list a {
+    .file-row {
+      display: flex;
+      align-items: center;
+      padding-right: 8px;
+    }
+    #file-list .file-link {
       display: block;
-      padding: 5px 12px;
+      flex: 1;
+      min-width: 0;
+      padding: 5px 6px 5px 12px;
       font-size: 0.8rem;
       color: #57606a;
       text-decoration: none;
@@ -75,8 +83,58 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    #file-list a:hover { background: #eaf0f7; }
-    #file-list a.active { border-left-color: #0969da; color: #0969da; background: #dbeafe; }
+    #file-list .file-link:hover { background: #eaf0f7; }
+    #file-list .file-link.active { border-left-color: #0969da; color: #0969da; background: #dbeafe; }
+
+    /* ── KB badge ──────────────────────────────────────────────── */
+    .kb-badge {
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #0969da;
+      background: #dbeafe;
+      border: 1px solid #93c5fd;
+      border-radius: 3px;
+      padding: 1px 5px;
+      text-decoration: none;
+      flex-shrink: 0;
+      white-space: nowrap;
+      transition: background 0.1s;
+    }
+    .kb-badge:hover { background: #bfdbfe; }
+
+    /* ── KB article prose ──────────────────────────────────────── */
+    .kb-article {
+      max-width: 740px;
+      padding: 28px 36px;
+      font-size: 0.9rem;
+      line-height: 1.75;
+      color: #1f2328;
+      white-space: normal;
+      word-wrap: break-word;
+    }
+    .kb-article h1 { font-size: 1.35rem; font-weight: 700; margin-bottom: 6px; }
+    .kb-article .kb-meta { font-size: 0.78rem; color: #6e7781; margin-bottom: 24px; }
+    .kb-article h2 { font-size: 1.05rem; font-weight: 600; margin: 28px 0 8px;
+                     border-bottom: 1px solid #d0d7de; padding-bottom: 5px; }
+    .kb-article h3 { font-size: 0.92rem; font-weight: 600; margin: 18px 0 6px; }
+    .kb-article p  { margin-bottom: 12px; }
+    .kb-article code { background: #eaeef2; padding: 1px 5px; border-radius: 4px;
+                       font-family: 'Cascadia Code','Fira Code',monospace; font-size: 0.81rem; }
+    .kb-article pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+                      padding: 14px 16px; overflow-x: auto; margin: 14px 0;
+                      white-space: pre; }
+    .kb-article pre code { background: none; padding: 0; white-space: pre; }
+    .kb-article table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 0.84rem; }
+    .kb-article th { background: #f0f2f4; padding: 8px 12px; text-align: left;
+                     border: 1px solid #d0d7de; font-weight: 600; }
+    .kb-article td { padding: 7px 12px; border: 1px solid #d0d7de; }
+    .kb-article tr:nth-child(even) td { background: #f8f9fa; }
+    .kb-article ul, .kb-article ol { padding-left: 22px; margin-bottom: 12px; }
+    .kb-article li { margin-bottom: 4px; }
+    .kb-article blockquote { border-left: 3px solid #0969da; margin: 14px 0;
+                             padding: 8px 14px; background: #f0f6ff;
+                             color: #57606a; border-radius: 0 4px 4px 0; }
 
     /* ── Code pane ─────────────────────────────────────────────── */
     #code-pane {
@@ -220,7 +278,13 @@
 // When served via a local HTTP server from the repo root, '../src' works.
 const ASM_DIR      = '../src';
 const COMMENTS_DIR = '../comments';
+const KB_DIR       = '../kb';
 const CACHE_BUST   = `?v=${Date.now()}`;
+
+// Files that have a Knowledge Bank article in kb/<basename>.md
+const KB_FILES = new Set([
+  '02_hello_args.asm',
+]);
 
 // ── File list ─────────────────────────────────────────────────────────────────
 // Files are listed explicitly because browsers cannot list directories.
@@ -280,13 +344,30 @@ FILES.forEach(group => {
   group.files.forEach(fname => {
     allFiles.push(fname);
 
-    // sidebar link
+    // sidebar row (file link + optional KB badge)
+    const row = document.createElement('div');
+    row.className = 'file-row';
+
     const a = document.createElement('a');
     a.href = '#';
+    a.className = 'file-link';
     a.textContent = fname;
     a.dataset.file = fname;
     a.addEventListener('click', e => { e.preventDefault(); loadFile(fname); });
-    fileListEl.appendChild(a);
+    row.appendChild(a);
+
+    if (KB_FILES.has(fname)) {
+      const kb = document.createElement('a');
+      kb.href = '#';
+      kb.className = 'kb-badge';
+      kb.title = 'Knowledge Bank article';
+      kb.textContent = 'KB';
+      kb.dataset.file = fname;
+      kb.addEventListener('click', e => { e.preventDefault(); loadKB(fname); });
+      row.appendChild(kb);
+    }
+
+    fileListEl.appendChild(row);
 
     // select option
     const opt = document.createElement('option');
@@ -377,7 +458,7 @@ async function loadFile(fname) {
   currentComments = {};
 
   // Highlight active file in sidebar
-  document.querySelectorAll('#file-list a').forEach(a => {
+  document.querySelectorAll('#file-list .file-link').forEach(a => {
     a.classList.toggle('active', a.dataset.file === fname);
   });
   fileSelectEl.value = fname;
@@ -508,6 +589,34 @@ function showAnnotation(lineNum, rawLine) {
   }
 
   body.innerHTML = html;
+}
+
+// ── Load and render a Knowledge Bank article ──────────────────────────────────
+async function loadKB(fname) {
+  currentFile = fname;
+  currentComments = {};
+
+  document.querySelectorAll('#file-list .file-link').forEach(a => {
+    a.classList.toggle('active', a.dataset.file === fname);
+  });
+  fileSelectEl.value = fname;
+
+  // Annotation pane: prompt to switch to source for line annotations
+  document.getElementById('annotation-body').innerHTML =
+    `<p class="placeholder">Knowledge Bank article.<br><br>
+     Click the filename in the sidebar to view the source and line annotations.</p>`;
+
+  const baseName = fname.replace('.asm', '');
+  try {
+    const r = await fetch(`${KB_DIR}/${baseName}.md${CACHE_BUST}`);
+    if (!r.ok) throw new Error(r.statusText);
+    const md = await r.text();
+    const pre = document.getElementById('code-pre');
+    pre.innerHTML = `<div class="kb-article">${marked.parse(md)}</div>`;
+  } catch (e) {
+    document.getElementById('code-pre').innerHTML =
+      `<span style="color:#cf222e;padding:16px;display:block">Could not load KB article: ${e.message}</span>`;
+  }
 }
 
 function esc(s) {
